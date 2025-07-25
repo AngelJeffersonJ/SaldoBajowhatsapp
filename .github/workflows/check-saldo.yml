@@ -1,0 +1,41 @@
+name: Check Saldos
+
+on:
+  schedule:
+    - cron:  '0 13-21 * * *'   # Cada hora de 7am a 9pm MX (-6 UTC es 13-21 UTC)
+  workflow_dispatch:           # Permite ejecutarlo manual
+
+jobs:
+  run-script:
+    runs-on: ubuntu-latest
+    env:
+      TWILIO_SID: ${{ secrets.TWILIO_SID }}
+      TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
+      TWILIO_NUMBER: ${{ secrets.TWILIO_NUMBER }}
+      TARGET_NUMBER: ${{ secrets.TARGET_NUMBER }}
+      PAGAQUI_USER: ${{ secrets.PAGAQUI_USER }}
+      PAGAQUI_PASS: ${{ secrets.PAGAQUI_PASS }}
+      # Lo mismo para recargaqui si aplicara
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright & browsers
+        run: |
+          pip install playwright
+          python -m playwright install
+
+      - name: Run script
+        run: |
+          python main.py
