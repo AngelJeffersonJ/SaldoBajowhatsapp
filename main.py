@@ -1,18 +1,16 @@
-import time
 import os
+import time
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
 
-# ---- CARGAR VARIABLES DE ENTORNO DESDE GITHUB SECRETS ----
-PAGAQUI_USER = os.environ.get("PAGAQUI_USER")
-PAGAQUI_PASS = os.environ.get("PAGAQUI_PASS")
-TWILIO_SID = os.environ.get("TWILIO_SID")
-TWILIO_TOKEN = os.environ.get("TWILIO_TOKEN")
-
-# Si tus números y sandbox no cambian puedes dejarlos aquí, sino ponlos igual como secrets
-WHATSAPP_FROM = "whatsapp:+14155238886"      # Twilio Sandbox
-WHATSAPP_TO = "whatsapp:+5214492155882"      # Tu número (ajústalo si es necesario)
-SALDO_UMBRAL = 3000
+# ---- CONFIGURACIÓN DESDE VARIABLES DE ENTORNO ----
+TWILIO_SID     = os.environ["TWILIO_SID"]
+TWILIO_TOKEN   = os.environ["TWILIO_TOKEN"]
+PAGAQUI_USER   = os.environ["PAGAAQUI_USER"]
+PAGAQUI_PASS   = os.environ["PAGAAQUI_PASS"]
+WHATSAPP_FROM  = "whatsapp:+14155238886"         # Twilio Sandbox (no lo pongas en secrets)
+WHATSAPP_TO    = "whatsapp:+5214492155882"       # Cambia aquí tu número si lo necesitas
+SALDO_UMBRAL   = 3000                            # Cambia el umbral aquí si lo requieres
 
 def enviar_whatsapp(saldo):
     client = Client(TWILIO_SID, TWILIO_TOKEN)
