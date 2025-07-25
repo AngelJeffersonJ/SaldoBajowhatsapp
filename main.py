@@ -10,7 +10,7 @@ PAGAQUI_USER   = os.environ["PAGAQUI_USER"]
 PAGAQUI_PASS   = os.environ["PAGAQUI_PASS"]
 WHATSAPP_FROM  = "whatsapp:+14155238886"         # Twilio Sandbox (no lo pongas en secrets)
 WHATSAPP_TO    = "whatsapp:+5214492155882"       # Cambia aquí tu número si lo necesitas
-SALDO_UMBRAL   = 8000                            # Cambia el umbral aquí si lo requieres
+SALDO_UMBRAL   = 3000                            # Cambia el umbral aquí si lo requieres
 
 def enviar_whatsapp(saldo):
     client = Client(TWILIO_SID, TWILIO_TOKEN)
