@@ -2,7 +2,7 @@ name: Check Saldos
 
 on:
   schedule:
-    - cron: '*/2 * * * *'   # Cada hora de 7am a 9pm MX (-6 UTC es 13-21 UTC)
+    - cron: '0 13-21 * * *'  # Cada hora de 7am a 9pm MX (-6 UTC es 13-21 UTC)
   workflow_dispatch:           # Permite ejecutarlo manual
 
 jobs:
