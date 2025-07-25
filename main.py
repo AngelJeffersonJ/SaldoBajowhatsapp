@@ -1,86 +1,111 @@
-import os
 import time
-from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
+import os
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
-from dotenv import load_dotenv
 
-load_dotenv()
+# ---- CONFIGURACIÓN DESDE VARIABLES DE ENTORNO (GitHub Secrets) ----
+TWILIO_SID = os.environ.get("TWILIO_SID")
+TWILIO_TOKEN = os.environ.get("TWILIO_TOKEN")
+WHATSAPP_FROM = os.environ.get("WHATSAPP_FROM")
+WHATSAPP_TO = os.environ.get("WHATSAPP_TO")
 
-# Credenciales Twilio
-TWILIO_SID = os.getenv('TWILIO_SID')
-TWILIO_TOKEN = os.getenv('TWILIO_TOKEN')
-TWILIO_WHATSAPP = 'whatsapp:+14155238886'
-TO_WHATSAPP = 'whatsapp:+524492155882'  # Cambia a tus destinatarios
+# ---- LOGIN ----
+USUARIO = "multipago"
+PASSWORD = "msa131127e24"
+SALDO_UMBRAL = 3000
 
-client = Client(TWILIO_SID, TWILIO_TOKEN)
-
-# Credenciales Pagaqui
-PAGAQUI_USER = os.getenv('PAGAQUI_USER')
-PAGAQUI_PASS = os.getenv('PAGAQUI_PASS')
-
-def notificar(saldo):
-    msg = f'¡ALERTA! El saldo en Pagaqui es bajo: {saldo}'
-    client.messages.create(
-        body=msg,
-        from_=TWILIO_WHATSAPP,
-        to=TO_WHATSAPP
+def enviar_whatsapp(saldo):
+    client = Client(TWILIO_SID, TWILIO_TOKEN)
+    message = client.messages.create(
+        body=f"Saldo Pagaqui bajo: ${saldo:,.2f}\n¡Revisa tu plataforma!",
+        from_=WHATSAPP_FROM,
+        to=WHATSAPP_TO
     )
+    print("Mensaje enviado:", message.sid)
 
-def obtener_saldo_pagaqui():
-    chrome_options = Options()
-    chrome_options.add_argument('--headless')
-    chrome_options.add_argument('--no-sandbox')
-    chrome_options.add_argument('--disable-dev-shm-usage')
+def obtener_saldo():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        page.goto("https://www.pagaqui.com.mx/")
+        page.wait_for_selector('input[name="username"]', timeout=15000)
 
-    with webdriver.Chrome(options=chrome_options) as driver:
-        driver.get('https://www.pagaqui.com.mx/homepagaqui.aspx')
-        driver.find_element(By.NAME, 'username').send_keys(PAGAQUI_USER)
-        driver.find_element(By.NAME, 'password').send_keys(PAGAQUI_PASS)
-        driver.find_element(By.ID, 'entrar').click()
-        time.sleep(2)
+        # Primer intento de login
+        page.fill('input[name="username"]', USUARIO)
+        page.fill('input[name="password"]', PASSWORD)
+        page.click('input[name="entrar"]')
+        time.sleep(3)
 
-        # Si aparece el checkbox de forzar sesión
+        # Si aparece el checkbox de forzar logout, hay que forzar sesión
+        intentos = 0
+        while page.query_selector('input[name="forcelogout"]') and intentos < 2:
+            print("Forzando logout de sesión previa...")
+            page.check('input[name="forcelogout"]')
+            page.fill('input[name="username"]', USUARIO)
+            page.fill('input[name="password"]', PASSWORD)
+            page.click('input[name="entrar"]')
+            time.sleep(3)
+            intentos += 1
+
+        # Esperar el menú de navegación
         try:
-            checkbox = driver.find_element(By.ID, 'forcelogout')
-            if checkbox.is_displayed():
-                checkbox.click()
-                driver.find_element(By.ID, 'entrar').click()
-                time.sleep(2)
-        except Exception:
-            pass  # No apareció
+            page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=15000)
+        except PlaywrightTimeout:
+            print("Error: No cargó el menú de navegación.")
+            browser.close()
+            return None
 
-        # Ir a "Administración" > "Info. Cuenta"
-        driver.find_element(By.LINK_TEXT, 'Administración').click()
-        driver.find_element(By.ID, 'ctl00_InfoCuentaLink').click()
-        time.sleep(2)
+        # Abrir menú Administración
+        nav_links = page.query_selector_all('a.nav-link.dropdown-toggle')
+        found_admin = False
+        for nav in nav_links:
+            if "Administración" in nav.inner_text():
+                nav.click()
+                found_admin = True
+                break
+        if not found_admin:
+            print("No se encontró el menú 'Administración'.")
+            browser.close()
+            return None
 
-        # Buscar el saldo de abonos
-        filas = driver.find_elements(By.XPATH, "//div[contains(@class,'row')]")
+        time.sleep(1.2)  # Menú despliegue
+
+        # Click en "Info. Cuenta"
+        try:
+            page.click('a#ctl00_InfoCuentaLink', timeout=8000)
+        except PlaywrightTimeout:
+            print("No se encontró el enlace 'Info. Cuenta'.")
+            browser.close()
+            return None
+
+        page.wait_for_load_state('networkidle')
+        time.sleep(3)  # Deja cargar el saldo
+
+        # Buscar el saldo final en la tabla
+        filas = page.query_selector_all('div.row')
+        saldo_encontrado = None
         for fila in filas:
-            if "Saldo Final" in fila.text:
-                abonos = fila.find_elements(By.XPATH, ".//div[contains(@class,'col-md-3')]")[0].text
-                return abonos.strip()
+            try:
+                cols = fila.query_selector_all('div')
+                if len(cols) >= 2 and "Saldo Final" in cols[0].inner_text():
+                    abonos = cols[1].inner_text()
+                    if "$" in abonos:
+                        saldo = abonos.split("$")[1].replace(",", "").strip()
+                        saldo = float(saldo)
+                        saldo_encontrado = saldo
+                        break
+            except Exception:
+                continue
 
-        return None
+        browser.close()
+        return saldo_encontrado
 
-def parsear_saldo(s):
-    # Convierte "$ 2,345.67" a float
-    return float(s.replace('$', '').replace(',', '').strip())
-
-def checar_y_notificar():
-    saldo = obtener_saldo_pagaqui()
-    if saldo:
-        monto = parsear_saldo(saldo)
-        print(f"Saldo actual: {monto}")
-        if monto <= 3000:
-            notificar(saldo)
+if __name__ == "__main__":
+    saldo = obtener_saldo()
+    print("Saldo detectado:", saldo)
+    if saldo is not None and saldo < SALDO_UMBRAL:
+        enviar_whatsapp(saldo)
+    elif saldo is not None:
+        print("Saldo suficiente, no se envía WhatsApp.")
     else:
-        print("No se pudo obtener el saldo.")
-
-if __name__ == '__main__':
-    hora = datetime.now().hour
-    if 7 <= hora <= 21:
-        checar_y_notificar()
+        print("No se pudo detectar saldo.")
