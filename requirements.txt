@@ -1,3 +1,4 @@
-selenium
+playwright
 twilio
-python-dotenv
+# Para instalar navegadores en CI:
+pytest-playwright
