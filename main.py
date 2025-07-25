@@ -3,15 +3,15 @@ import os
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
 
-# ---- CONFIGURACIÓN DESDE VARIABLES DE ENTORNO (GitHub Secrets) ----
+# ---- CARGAR VARIABLES DE ENTORNO DESDE GITHUB SECRETS ----
+PAGAQUI_USER = os.environ.get("PAGAQUI_USER")
+PAGAQUI_PASS = os.environ.get("PAGAQUI_PASS")
 TWILIO_SID = os.environ.get("TWILIO_SID")
 TWILIO_TOKEN = os.environ.get("TWILIO_TOKEN")
-WHATSAPP_FROM = os.environ.get("WHATSAPP_FROM")
-WHATSAPP_TO = os.environ.get("WHATSAPP_TO")
 
-# ---- LOGIN ----
-USUARIO = "multipago"
-PASSWORD = "msa131127e24"
+# Si tus números y sandbox no cambian puedes dejarlos aquí, sino ponlos igual como secrets
+WHATSAPP_FROM = "whatsapp:+14155238886"      # Twilio Sandbox
+WHATSAPP_TO = "whatsapp:+5214492155882"      # Tu número (ajústalo si es necesario)
 SALDO_UMBRAL = 3000
 
 def enviar_whatsapp(saldo):
@@ -31,8 +31,8 @@ def obtener_saldo():
         page.wait_for_selector('input[name="username"]', timeout=15000)
 
         # Primer intento de login
-        page.fill('input[name="username"]', USUARIO)
-        page.fill('input[name="password"]', PASSWORD)
+        page.fill('input[name="username"]', PAGAQUI_USER)
+        page.fill('input[name="password"]', PAGAQUI_PASS)
         page.click('input[name="entrar"]')
         time.sleep(3)
 
@@ -41,8 +41,8 @@ def obtener_saldo():
         while page.query_selector('input[name="forcelogout"]') and intentos < 2:
             print("Forzando logout de sesión previa...")
             page.check('input[name="forcelogout"]')
-            page.fill('input[name="username"]', USUARIO)
-            page.fill('input[name="password"]', PASSWORD)
+            page.fill('input[name="username"]', PAGAQUI_USER)
+            page.fill('input[name="password"]', PAGAQUI_PASS)
             page.click('input[name="entrar"]')
             time.sleep(3)
             intentos += 1
