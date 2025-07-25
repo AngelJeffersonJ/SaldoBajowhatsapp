@@ -1,34 +1,26 @@
-name: Check Saldo Pagaqui
+name: Cheque Saldo Pagaqui
 
 on:
   schedule:
-    # Corre a las 7, 8, 9, ..., 21 horas (7am a 9pm) todos los días
-    - cron: '0 13-03 * * *' # UTC: 13 (7am) a 3 (9pm) siguiente día
+    - cron: '0 13-21 * * *' # De 7am a 3pm hora MX (ajusta si horario de verano cambia)
   workflow_dispatch:
 
 jobs:
   check-saldo:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v4
+      - name: Repositorio de pago
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install playwright twilio
-        playwright install chromium
-
-    - name: Run saldo checker
-      env:
-        PAGAAQUI_USER: ${{ secrets.PAGAAQUI_USER }}
-        PAGAAQUI_PASS: ${{ secrets.PAGAAQUI_PASS }}
-        TWILIO_SID: ${{ secrets.TWILIO_SID }}
-        TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
-      run: python main.py
+      - name: Ejecutar script de saldo
+        env:
+          PAGAQUI_USER: ${{ secrets.PAGAQUI_USER }}
+          PAGAQUI_PASS: ${{ secrets.PAGAQUI_PASS }}
+          TWILIO_SID: ${{ secrets.TWILIO_SID }}
+          TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
+        run: python main.py
