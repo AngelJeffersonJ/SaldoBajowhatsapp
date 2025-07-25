@@ -6,8 +6,8 @@ from twilio.rest import Client
 # ---- CONFIGURACIÓN DESDE VARIABLES DE ENTORNO ----
 TWILIO_SID     = os.environ["TWILIO_SID"]
 TWILIO_TOKEN   = os.environ["TWILIO_TOKEN"]
-PAGAQUI_USER   = os.environ["PAGAAQUI_USER"]
-PAGAQUI_PASS   = os.environ["PAGAAQUI_PASS"]
+PAGAQUI_USER   = os.environ["PAGAQUI_USER"]
+PAGAQUI_PASS   = os.environ["PAGAQUI_PASS"]
 WHATSAPP_FROM  = "whatsapp:+14155238886"         # Twilio Sandbox (no lo pongas en secrets)
 WHATSAPP_TO    = "whatsapp:+5214492155882"       # Cambia aquí tu número si lo necesitas
 SALDO_UMBRAL   = 3000                            # Cambia el umbral aquí si lo requieres
