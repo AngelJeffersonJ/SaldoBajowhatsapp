@@ -3,107 +3,95 @@ import time
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
 
-# ---- CONFIGURACIÓN DESDE VARIABLES DE ENTORNO ----
-TWILIO_SID     = os.environ["TWILIO_SID"]
-TWILIO_TOKEN   = os.environ["TWILIO_TOKEN"]
-PAGAQUI_USER   = os.environ["PAGAQUI_USER"]
-PAGAQUI_PASS   = os.environ["PAGAQUI_PASS"]
-WHATSAPP_FROM  = "whatsapp:+14155238886"         # Twilio Sandbox (no lo pongas en secrets)
-WHATSAPP_TO    = "whatsapp:+5214492343676"       # Cambia aquí tu número si lo necesitas
-SALDO_UMBRAL   = 3000                            # Cambia el umbral aquí si lo requieres
+# ---- VARIABLES DE ENTORNO ----
+TWILIO_SID = os.getenv("TWILIO_SID")
+TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
+WHATSAPP_FROM = "whatsapp:+14155238886"  # Twilio Sandbox
+WHATSAPP_TO = "whatsapp:+5214492343676"  # Cambia a tu número en formato internacional
 
-def enviar_whatsapp(saldo):
-    client = Client(TWILIO_SID, TWILIO_TOKEN)
-    message = client.messages.create(
-        body=f"Saldo Pagaqui bajo: ${saldo:,.2f}\n¡Revisa tu plataforma!",
-        from_=WHATSAPP_FROM,
-        to=WHATSAPP_TO
-    )
-    print("Mensaje enviado:", message.sid)
+USUARIO = os.getenv("PAGAQUI_USER")
+PASSWORD = os.getenv("PAGAQUI_PASS")
+SALDO_INTENTOS = 3  # Reintentos para obtener saldo
+
+def enviar_whatsapp(mensaje):
+    try:
+        client = Client(TWILIO_SID, TWILIO_TOKEN)
+        message = client.messages.create(
+            body=mensaje,
+            from_=WHATSAPP_FROM,
+            to=WHATSAPP_TO
+        )
+        print("Mensaje enviado:", message.sid)
+    except Exception as e:
+        print(f"Error enviando WhatsApp: {e}")
 
 def obtener_saldo():
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto("https://www.pagaqui.com.mx/")
-        page.wait_for_selector('input[name="username"]', timeout=15000)
-
-        # Primer intento de login
-        page.fill('input[name="username"]', PAGAQUI_USER)
-        page.fill('input[name="password"]', PAGAQUI_PASS)
-        page.click('input[name="entrar"]')
-        time.sleep(3)
-
-        # Si aparece el checkbox de forzar logout, hay que forzar sesión
-        intentos = 0
-        while page.query_selector('input[name="forcelogout"]') and intentos < 2:
-            print("Forzando logout de sesión previa...")
-            page.check('input[name="forcelogout"]')
-            page.fill('input[name="username"]', PAGAQUI_USER)
-            page.fill('input[name="password"]', PAGAQUI_PASS)
-            page.click('input[name="entrar"]')
-            time.sleep(3)
-            intentos += 1
-
-        # Esperar el menú de navegación
+    for intento in range(1, SALDO_INTENTOS + 1):
+        print(f"Intento de consulta de saldo: {intento}")
         try:
-            page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=15000)
-        except PlaywrightTimeout:
-            print("Error: No cargó el menú de navegación.")
-            browser.close()
-            return None
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.goto("https://www.pagaqui.com.mx/")
+                page.wait_for_selector('input[name="username"]', timeout=20000)
 
-        # Abrir menú Administración
-        nav_links = page.query_selector_all('a.nav-link.dropdown-toggle')
-        found_admin = False
-        for nav in nav_links:
-            if "Administración" in nav.inner_text():
-                nav.click()
-                found_admin = True
-                break
-        if not found_admin:
-            print("No se encontró el menú 'Administración'.")
-            browser.close()
-            return None
+                # Login
+                page.fill('input[name="username"]', USUARIO)
+                page.fill('input[name="password"]', PASSWORD)
+                page.click('input[name="entrar"]')
+                time.sleep(3)
 
-        time.sleep(1.2)  # Menú despliegue
+                # Si aparece checkbox de logout forzado
+                if page.query_selector('input[name="forcelogout"]'):
+                    page.check('input[name="forcelogout"]')
+                    page.fill('input[name="username"]', USUARIO)
+                    page.fill('input[name="password"]', PASSWORD)
+                    page.click('input[name="entrar"]')
+                    time.sleep(3)
 
-        # Click en "Info. Cuenta"
-        try:
-            page.click('a#ctl00_InfoCuentaLink', timeout=8000)
-        except PlaywrightTimeout:
-            print("No se encontró el enlace 'Info. Cuenta'.")
-            browser.close()
-            return None
-
-        page.wait_for_load_state('networkidle')
-        time.sleep(3)  # Deja cargar el saldo
-
-        # Buscar el saldo final en la tabla
-        filas = page.query_selector_all('div.row')
-        saldo_encontrado = None
-        for fila in filas:
-            try:
-                cols = fila.query_selector_all('div')
-                if len(cols) >= 2 and "Saldo Final" in cols[0].inner_text():
-                    abonos = cols[1].inner_text()
-                    if "$" in abonos:
-                        saldo = abonos.split("$")[1].replace(",", "").strip()
-                        saldo = float(saldo)
-                        saldo_encontrado = saldo
+                # Esperar menú y abrir administración
+                page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=20000)
+                nav_links = page.query_selector_all('a.nav-link.dropdown-toggle')
+                for nav in nav_links:
+                    if "Administración" in nav.inner_text():
+                        nav.click()
                         break
-            except Exception:
-                continue
+                time.sleep(1.2)
+                page.click('a#ctl00_InfoCuentaLink', timeout=10000)
+                page.wait_for_load_state('networkidle')
+                time.sleep(3)
 
-        browser.close()
-        return saldo_encontrado
+                # Buscar saldo final
+                filas = page.query_selector_all('div.row')
+                for fila in filas:
+                    try:
+                        cols = fila.query_selector_all('div')
+                        if len(cols) >= 2 and "Saldo Final" in cols[0].inner_text():
+                            abonos = cols[1].inner_text()
+                            if "$" in abonos:
+                                saldo = abonos.split("$")[1].replace(",", "").strip()
+                                saldo = float(saldo)
+                                browser.close()
+                                return saldo
+                    except Exception:
+                        continue
+                browser.close()
+        except PlaywrightTimeout as e:
+            print(f"Timeout playwright: {e}")
+        except Exception as e:
+            print(f"Error playwright: {e}")
+        time.sleep(4)
+    return None
 
 if __name__ == "__main__":
     saldo = obtener_saldo()
-    print("Saldo detectado:", saldo)
-    if saldo is not None and saldo < SALDO_UMBRAL:
-        enviar_whatsapp(saldo)
-    elif saldo is not None:
-        print("Saldo suficiente, no se envía WhatsApp.")
+    if saldo is not None:
+        print(f"Saldo detectado: {saldo}")
+        if saldo < 3000:
+            enviar_whatsapp(f"🟥 *Peligro*: Saldo MUY bajo en Pagaqui: ${saldo:,.2f}\n¡Recarga urgente!")
+        elif 3000 <= saldo < 4000:
+            enviar_whatsapp(f"🟨 *Alerta*: Saldo en umbral bajo (${saldo:,.2f})\nConsidera recargar pronto.")
+        else:
+            print("Saldo fuera del rango crítico, no se envía WhatsApp.")
     else:
-        print("No se pudo detectar saldo.")
+        print("No se pudo obtener saldo tras 3 intentos.")
