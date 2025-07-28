@@ -14,8 +14,8 @@ PAGAQUI_USER = os.getenv("PAGAQUI_USER")
 PAGAQUI_PASS = os.getenv("PAGAQUI_PASS")
 
 # Recargaqui
-RECARGAQUI_USER = os.getenv("RECARGAQUI_USER", "multisaldo")
-RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS", "msa131127")
+RECARGAQUI_USER = os.getenv("RECARGAQUI_USER")
+RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS")
 
 SALDO_INTENTOS = 3         # Intentos por plataforma antes de reiniciar ciclo
 CICLOS_REINTENTO = 3       # Ciclos totales de todo el proceso (pagaqui + recargaqui)
