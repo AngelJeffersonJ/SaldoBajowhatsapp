@@ -3,20 +3,22 @@ import time
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
 
-# --- Configuración Twilio ---
+# Twilio Config
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 WHATSAPP_FROM = "whatsapp:+14155238886"  # Twilio Sandbox
-WHATSAPP_TO = "whatsapp:+5214492155882"  # Tu número de WhatsApp
+WHATSAPP_TO = "whatsapp:+5214492155882"  # Cambia si necesitas
 
-# --- Usuarios y contraseñas ---
+# Pagaqui
 PAGAQUI_USER = os.getenv("PAGAQUI_USER")
 PAGAQUI_PASS = os.getenv("PAGAQUI_PASS")
+
+# Recargaqui
 RECARGAQUI_USER = os.getenv("RECARGAQUI_USER")
 RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS")
 
 SALDO_INTENTOS = 3         # Intentos por plataforma antes de reiniciar ciclo
-CICLOS_REINTENTO = 3       # Ciclos totales de todo el proceso
+CICLOS_REINTENTO = 3       # Ciclos totales de todo el proceso (pagaqui + recargaqui)
 
 def enviar_whatsapp(mensaje):
     try:
@@ -95,17 +97,7 @@ def obtener_saldo_recargaqui():
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
                 page.goto("https://recargaqui.com.mx")
-                time.sleep(4)  # Deja cargar bien la página
-
-                # Screenshot y listado de frames para debug
-                screenshot_path = f"screenshot_recargaqui_intento{intento}.png"
-                page.screenshot(path=screenshot_path, full_page=True)
-                print(f"Screenshot guardado en: {screenshot_path}")
-
-                print("Frames encontrados:")
-                for idx, f in enumerate(page.frames):
-                    print(f"  Frame {idx}: {f.url}")
-
+                # Encuentra el frame de login
                 frame = None
                 for f in page.frames:
                     if "Login.aspx" in f.url:
@@ -193,8 +185,9 @@ if __name__ == "__main__":
             else:
                 print("Saldo BAIT fuera del rango crítico, no se envía WhatsApp.")
 
-            break
+            break   # ¡Todo bien, detenemos ciclo!
         else:
+            # Si llegamos aquí, hubo algún fallo. Si ya fue el último ciclo, manda WhatsApp de error
             if ciclo == CICLOS_REINTENTO:
                 if falla_pagaqui:
                     enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Pagaqui tras varios intentos. Revisa manualmente.")
