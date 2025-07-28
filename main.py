@@ -8,14 +8,18 @@ from twilio.rest import Client
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 WHATSAPP_FROM = "whatsapp:+14155238886"  # Twilio Sandbox
-WHATSAPP_TO = "whatsapp:+5214492155882"
+WHATSAPP_TO = "whatsapp:+5214492155882"  # Cambia si necesitas
 
-# Usuarios/Passwords
+# Pagaqui
 PAGAQUI_USER = os.getenv("PAGAQUI_USER")
 PAGAQUI_PASS = os.getenv("PAGAQUI_PASS")
+
+# Recargaqui
 RECARGAQUI_USER = os.getenv("RECARGAQUI_USER", "multisaldo")
 RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS", "msa131127")
+
 SALDO_INTENTOS = 3
+MAX_REINTENTOS = 3  # Número de reintentos globales (todo el proceso)
 
 def enviar_whatsapp(mensaje):
     try:
@@ -38,6 +42,8 @@ def obtener_saldo_pagaqui():
                 page = browser.new_page()
                 page.goto("https://www.pagaqui.com.mx/")
                 page.wait_for_selector('input[name="username"]', timeout=20000)
+
+                # Login
                 page.fill('input[name="username"]', PAGAQUI_USER)
                 page.fill('input[name="password"]', PAGAQUI_PASS)
                 page.click('input[name="entrar"]')
@@ -45,7 +51,6 @@ def obtener_saldo_pagaqui():
 
                 # Si aparece checkbox de logout forzado
                 if page.query_selector('input[name="forcelogout"]'):
-                    print("Forzando logout en Pagaqui...")
                     page.check('input[name="forcelogout"]')
                     page.fill('input[name="username"]', PAGAQUI_USER)
                     page.fill('input[name="password"]', PAGAQUI_PASS)
@@ -155,24 +160,38 @@ def obtener_saldo_recargaqui():
         time.sleep(4)
     return None
 
+# ---- MAIN LOOP DE REINTENTO GLOBAL ----
 if __name__ == "__main__":
-    saldo_pagaqui = obtener_saldo_pagaqui()
-    saldo_bait = obtener_saldo_recargaqui()
+    for intento in range(1, MAX_REINTENTOS + 1):
+        print(f"\n======== INTENTO GLOBAL {intento} ========")
+        saldo_pagaqui = obtener_saldo_pagaqui()
+        saldo_bait = obtener_saldo_recargaqui()
 
-    # Si alguna consulta falló, termina con error para reintentar (NO gasta WhatsApp)
-    if saldo_pagaqui is None or saldo_bait is None:
-        print("No se pudo obtener saldo de uno o ambos portales. Reiniciando proceso...")
-        sys.exit(1)
+        errores = []
+        if saldo_pagaqui is None:
+            errores.append("Pagaqui")
+        if saldo_bait is None:
+            errores.append("Recargaqui/BAIT")
 
-    # Solo aquí enviamos WhatsApp, así ahorras saldo
-    if saldo_pagaqui < 4000:
-        enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Pagaqui: ${saldo_pagaqui:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
-    else:
-        print("Saldo Pagaqui fuera del rango crítico, no se envía WhatsApp.")
+        if not errores:
+            # Ambos saldos obtenidos, analizar límites y enviar WhatsApp solo si es necesario
+            print(f"Saldo Pagaqui detectado: {saldo_pagaqui}")
+            print(f"Saldo BAIT (Recargaqui) detectado: {saldo_bait}")
 
-    if saldo_bait < 4000:
-        enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Recargaqui/BAIT: ${saldo_bait:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
-    else:
-        print("Saldo BAIT fuera del rango crítico, no se envía WhatsApp.")
+            if saldo_pagaqui < 4000:
+                enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Pagaqui: ${saldo_pagaqui:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
+            if saldo_bait < 4000:
+                enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Recargaqui/BAIT: ${saldo_bait:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
 
-    print("Consulta terminada correctamente.")
+            print("Proceso exitoso, terminando script.")
+            sys.exit(0)
+        else:
+            print(f"No se pudo obtener saldo de: {', '.join(errores)} (intento {intento}/{MAX_REINTENTOS})")
+            if intento < MAX_REINTENTOS:
+                print("Reintentando en 10 segundos...")
+                time.sleep(10)
+            else:
+                print("No se pudo obtener saldo tras varios intentos.")
+                # Si quieres, puedes enviar WhatsApp de error aquí, o solo dejar el print
+                # enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Pagaqui y/o Recargaqui/BAIT tras varios intentos. Revisa manualmente.")
+                sys.exit(1)
