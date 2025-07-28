@@ -3,22 +3,20 @@ import time
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
 
-# Twilio Config
+# --- Configuración Twilio ---
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 WHATSAPP_FROM = "whatsapp:+14155238886"  # Twilio Sandbox
-WHATSAPP_TO = "whatsapp:+5214492155882"  # Cambia si necesitas
+WHATSAPP_TO = "whatsapp:+5214492155882"  # Tu número de WhatsApp
 
-# Pagaqui
+# --- Usuarios y contraseñas ---
 PAGAQUI_USER = os.getenv("PAGAQUI_USER")
 PAGAQUI_PASS = os.getenv("PAGAQUI_PASS")
-
-# Recargaqui
 RECARGAQUI_USER = os.getenv("RECARGAQUI_USER")
 RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS")
 
-SALDO_INTENTOS = 3
-CICLOS_REINTENTO = 3
+SALDO_INTENTOS = 3         # Intentos por plataforma antes de reiniciar ciclo
+CICLOS_REINTENTO = 3       # Ciclos totales de todo el proceso
 
 def enviar_whatsapp(mensaje):
     try:
@@ -97,14 +95,13 @@ def obtener_saldo_recargaqui():
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
                 page.goto("https://recargaqui.com.mx")
-                time.sleep(4)  # Espera a que cargue bien
+                time.sleep(4)  # Deja cargar bien la página
 
-                # Toma un screenshot para ver qué carga realmente
+                # Screenshot y listado de frames para debug
                 screenshot_path = f"screenshot_recargaqui_intento{intento}.png"
                 page.screenshot(path=screenshot_path, full_page=True)
                 print(f"Screenshot guardado en: {screenshot_path}")
 
-                # Imprime los frames y sus URLs
                 print("Frames encontrados:")
                 for idx, f in enumerate(page.frames):
                     print(f"  Frame {idx}: {f.url}")
@@ -189,4 +186,21 @@ if __name__ == "__main__":
             if saldo_pagaqui < 4000:
                 enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Pagaqui: ${saldo_pagaqui:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
             else:
-                print("Saldo Pagaqui
+                print("Saldo Pagaqui fuera del rango crítico, no se envía WhatsApp.")
+
+            if saldo_bait < 4000:
+                enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Recargaqui/BAIT: ${saldo_bait:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
+            else:
+                print("Saldo BAIT fuera del rango crítico, no se envía WhatsApp.")
+
+            break
+        else:
+            if ciclo == CICLOS_REINTENTO:
+                if falla_pagaqui:
+                    enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Pagaqui tras varios intentos. Revisa manualmente.")
+                if falla_bait:
+                    enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Recargaqui/BAIT tras varios intentos. Revisa manualmente.")
+                exit(1)
+            else:
+                print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
+                time.sleep(10)
