@@ -6,8 +6,8 @@ from twilio.rest import Client
 # Twilio Config
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
-WHATSAPP_FROM = "whatsapp:+14155238886"  # Twilio Sandbox
-WHATSAPP_TO = "whatsapp:+5214492155882"  # Cambia si necesitas
+WHATSAPP_FROM = "whatsapp:+14155238886"
+WHATSAPP_TO = "whatsapp:+5214492155882"
 
 # Pagaqui
 PAGAQUI_USER = os.getenv("PAGAQUI_USER")
@@ -17,8 +17,8 @@ PAGAQUI_PASS = os.getenv("PAGAQUI_PASS")
 RECARGAQUI_USER = os.getenv("RECARGAQUI_USER")
 RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS")
 
-SALDO_INTENTOS = 3         # Intentos por plataforma antes de reiniciar ciclo
-CICLOS_REINTENTO = 3       # Ciclos totales de todo el proceso (pagaqui + recargaqui)
+SALDO_INTENTOS = 3
+CICLOS_REINTENTO = 3
 
 def enviar_whatsapp(mensaje):
     try:
@@ -48,7 +48,6 @@ def obtener_saldo_pagaqui():
                 page.click('input[name="entrar"]')
                 time.sleep(3)
 
-                # Si aparece checkbox de logout forzado
                 if page.query_selector('input[name="forcelogout"]'):
                     page.check('input[name="forcelogout"]')
                     page.fill('input[name="username"]', PAGAQUI_USER)
@@ -87,6 +86,7 @@ def obtener_saldo_pagaqui():
         except Exception as e:
             print(f"Error playwright: {e}")
         time.sleep(4)
+    print("No se pudo obtener saldo de Pagaqui tras 3 intentos.")
     return None
 
 def obtener_saldo_recargaqui():
@@ -97,7 +97,6 @@ def obtener_saldo_recargaqui():
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
                 page.goto("https://recargaqui.com.mx")
-                # Encuentra el frame de login
                 frame = None
                 for f in page.frames:
                     if "Login.aspx" in f.url:
@@ -109,14 +108,12 @@ def obtener_saldo_recargaqui():
                     browser.close()
                     return None
 
-                # Primer intento de login
                 frame.wait_for_selector('input[name="username"]', timeout=12000)
                 frame.fill('input[name="username"]', RECARGAQUI_USER)
                 frame.fill('input[name="password"]', RECARGAQUI_PASS)
                 frame.click('input[name="entrar"]')
                 page.wait_for_timeout(2500)
 
-                # Si aparece el checkbox, hay que marcarlo y repetir login
                 if frame.is_visible('input[name="forcelogout"]'):
                     print("Apareció el checkbox de sesión activa, forzando logout y reintentando login...")
                     frame.check('input[name="forcelogout"]')
@@ -125,7 +122,6 @@ def obtener_saldo_recargaqui():
                     frame.click('input[name="entrar"]')
                     page.wait_for_timeout(2500)
 
-                # Navega directo al dashboard
                 page.goto("https://recargaqui.com.mx/vtae/home.aspx")
                 try:
                     page.wait_for_selector('table.mGrid', timeout=25000)
@@ -158,6 +154,7 @@ def obtener_saldo_recargaqui():
         except Exception as e:
             print(f"Error playwright: {e}")
         time.sleep(4)
+    print("No se pudo obtener saldo de BAIT tras 3 intentos.")
     return None
 
 def ciclo_consulta():
@@ -184,15 +181,11 @@ if __name__ == "__main__":
                 enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Recargaqui/BAIT: ${saldo_bait:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
             else:
                 print("Saldo BAIT fuera del rango crítico, no se envía WhatsApp.")
-
-            break   # ¡Todo bien, detenemos ciclo!
+            break   # Todo bien, salimos del ciclo
         else:
-            # Si llegamos aquí, hubo algún fallo. Si ya fue el último ciclo, manda WhatsApp de error
+            # Solo imprimir en consola, no enviar WhatsApp si hay error al consultar algún saldo
             if ciclo == CICLOS_REINTENTO:
-                if falla_pagaqui:
-                    enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Pagaqui tras varios intentos. Revisa manualmente.")
-                if falla_bait:
-                    enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Recargaqui/BAIT tras varios intentos. Revisa manualmente.")
+                print(f"Error: No se pudo obtener todos los saldos tras {CICLOS_REINTENTO} ciclos.")
                 exit(1)
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
