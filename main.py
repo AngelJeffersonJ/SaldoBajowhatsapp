@@ -89,7 +89,7 @@ def obtener_saldo_recargaqui():
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
-                page.goto("https://recargaqui.com.mx")
+                page.goto("https://recargaquiws.com.mx")
                 frame = None
                 for f in page.frames:
                     if "Login.aspx" in f.url:
@@ -111,7 +111,7 @@ def obtener_saldo_recargaqui():
                     frame.fill('input[name="password"]', RECARGAQUI_PASS)
                     frame.click('input[name="entrar"]')
                     page.wait_for_timeout(2500)
-                page.goto("https://recargaqui.com.mx/vtae/home.aspx")
+                page.goto("https://recargaquiws.com.mx/home.aspx")
                 try:
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
@@ -163,7 +163,7 @@ if __name__ == "__main__":
                 urgentes = []
                 if saldo_pagaqui < 4000:
                     urgentes.append(f"Pagaqui: ${saldo_pagaqui:,.2f}")
-                if saldo_bait < 4000:
+                if saldo_bait < 1500:
                     urgentes.append(f"Recargaqui/BAIT: ${saldo_bait:,.2f}")
                 mensaje = "⚠️ Saldo bajo o crítico detectado:\n" + "\n".join(urgentes) + "\n¡Revisa tu plataforma y recarga si es necesario!"
             else:
