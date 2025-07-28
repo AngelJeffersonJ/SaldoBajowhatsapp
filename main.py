@@ -3,17 +3,17 @@ import time
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
 
-# ---- VARIABLES DE ENTORNO ----
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 WHATSAPP_FROM = "whatsapp:+14155238886"  # Twilio Sandbox
-WHATSAPP_TO = "whatsapp:+5214492343676"  # Cambia a tu número en formato internacional
+WHATSAPP_TO = "whatsapp:+5214492343676"  # Cambia si necesitas
 
 USUARIO = os.getenv("PAGAQUI_USER")
 PASSWORD = os.getenv("PAGAQUI_PASS")
-SALDO_INTENTOS = 3  # Reintentos para obtener saldo
+SALDO_INTENTOS = 3
 
-def enviar_whatsapp(mensaje):
+def enviar_whatsapp(saldo):
+    mensaje = f"⚠️ Saldo bajo o crítico en Pagaqui: ${saldo:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!"
     try:
         client = Client(TWILIO_SID, TWILIO_TOKEN)
         message = client.messages.create(
@@ -49,7 +49,6 @@ def obtener_saldo():
                     page.click('input[name="entrar"]')
                     time.sleep(3)
 
-                # Esperar menú y abrir administración
                 page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=20000)
                 nav_links = page.query_selector_all('a.nav-link.dropdown-toggle')
                 for nav in nav_links:
@@ -61,7 +60,6 @@ def obtener_saldo():
                 page.wait_for_load_state('networkidle')
                 time.sleep(3)
 
-                # Buscar saldo final
                 filas = page.query_selector_all('div.row')
                 for fila in filas:
                     try:
@@ -87,11 +85,10 @@ if __name__ == "__main__":
     saldo = obtener_saldo()
     if saldo is not None:
         print(f"Saldo detectado: {saldo}")
-        if saldo < 3000:
-            enviar_whatsapp(f"🟥 *Peligro*: Saldo MUY bajo en Pagaqui: ${saldo:,.2f}\n¡Recarga urgente!")
-        elif 3000 <= saldo < 4000:
-            enviar_whatsapp(f"🟨 *Alerta*: Saldo en umbral bajo (${saldo:,.2f})\nConsidera recargar pronto.")
+        if saldo < 4000:
+            enviar_whatsapp(saldo)
         else:
             print("Saldo fuera del rango crítico, no se envía WhatsApp.")
     else:
         print("No se pudo obtener saldo tras 3 intentos.")
+        enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Pagaqui tras 3 intentos. Revisa manualmente.")
