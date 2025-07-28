@@ -2,17 +2,14 @@ name: Cheque Saldo Pagaqui
 
 on:
   schedule:
-    - cron: '0 13-21 * * *' # De 7am a 3pm hora MX (ajusta si horario de verano cambia)
+    - cron: '0 13-21 * * *'  # Corre cada hora de 7am a 3pm MX (ajusta si cambia el horario)
   workflow_dispatch:
 
 jobs:
   check-saldo:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      max-attempts: 3  # <-- ¡Esto activa los reintentos automáticos!
     steps:
-      - name: Repositorio de pago
+      - name: Clonar repositorio
         uses: actions/checkout@v4
 
       - name: Instalar dependencias
