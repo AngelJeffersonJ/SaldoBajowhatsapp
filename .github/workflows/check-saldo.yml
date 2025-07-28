@@ -8,6 +8,9 @@ on:
 jobs:
   check-saldo:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-attempts: 3  # <-- ¡Esto activa los reintentos automáticos!
     steps:
       - name: Repositorio de pago
         uses: actions/checkout@v4
@@ -21,6 +24,8 @@ jobs:
         env:
           PAGAQUI_USER: ${{ secrets.PAGAQUI_USER }}
           PAGAQUI_PASS: ${{ secrets.PAGAQUI_PASS }}
+          RECARGAQUI_USER: ${{ secrets.RECARGAQUI_USER }}
+          RECARGAQUI_PASS: ${{ secrets.RECARGAQUI_PASS }}
           TWILIO_SID: ${{ secrets.TWILIO_SID }}
           TWILIO_TOKEN: ${{ secrets.TWILIO_TOKEN }}
         run: python main.py
