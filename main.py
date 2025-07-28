@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
@@ -18,8 +17,8 @@ PAGAQUI_PASS = os.getenv("PAGAQUI_PASS")
 RECARGAQUI_USER = os.getenv("RECARGAQUI_USER", "multisaldo")
 RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS", "msa131127")
 
-SALDO_INTENTOS = 3
-MAX_REINTENTOS = 3  # Número de reintentos globales (todo el proceso)
+SALDO_INTENTOS = 3         # Intentos por plataforma antes de reiniciar ciclo
+CICLOS_REINTENTO = 3       # Ciclos totales de todo el proceso (pagaqui + recargaqui)
 
 def enviar_whatsapp(mensaje):
     try:
@@ -160,38 +159,40 @@ def obtener_saldo_recargaqui():
         time.sleep(4)
     return None
 
-# ---- MAIN LOOP DE REINTENTO GLOBAL ----
+def ciclo_consulta():
+    saldo_pagaqui = obtener_saldo_pagaqui()
+    saldo_bait = obtener_saldo_recargaqui()
+    return saldo_pagaqui, saldo_bait
+
 if __name__ == "__main__":
-    for intento in range(1, MAX_REINTENTOS + 1):
-        print(f"\n======== INTENTO GLOBAL {intento} ========")
-        saldo_pagaqui = obtener_saldo_pagaqui()
-        saldo_bait = obtener_saldo_recargaqui()
+    for ciclo in range(1, CICLOS_REINTENTO + 1):
+        print(f"\n===== CICLO GENERAL DE CONSULTA #{ciclo} =====")
+        saldo_pagaqui, saldo_bait = ciclo_consulta()
 
-        errores = []
-        if saldo_pagaqui is None:
-            errores.append("Pagaqui")
-        if saldo_bait is None:
-            errores.append("Recargaqui/BAIT")
+        falla_pagaqui = saldo_pagaqui is None
+        falla_bait = saldo_bait is None
 
-        if not errores:
-            # Ambos saldos obtenidos, analizar límites y enviar WhatsApp solo si es necesario
-            print(f"Saldo Pagaqui detectado: {saldo_pagaqui}")
-            print(f"Saldo BAIT (Recargaqui) detectado: {saldo_bait}")
-
+        if not falla_pagaqui and not falla_bait:
+            print("\n--- Ambos saldos consultados exitosamente ---")
             if saldo_pagaqui < 4000:
                 enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Pagaqui: ${saldo_pagaqui:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
+            else:
+                print("Saldo Pagaqui fuera del rango crítico, no se envía WhatsApp.")
+
             if saldo_bait < 4000:
                 enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Recargaqui/BAIT: ${saldo_bait:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
-
-            print("Proceso exitoso, terminando script.")
-            sys.exit(0)
-        else:
-            print(f"No se pudo obtener saldo de: {', '.join(errores)} (intento {intento}/{MAX_REINTENTOS})")
-            if intento < MAX_REINTENTOS:
-                print("Reintentando en 10 segundos...")
-                time.sleep(10)
             else:
-                print("No se pudo obtener saldo tras varios intentos.")
-                # Si quieres, puedes enviar WhatsApp de error aquí, o solo dejar el print
-                # enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Pagaqui y/o Recargaqui/BAIT tras varios intentos. Revisa manualmente.")
-                sys.exit(1)
+                print("Saldo BAIT fuera del rango crítico, no se envía WhatsApp.")
+
+            break   # ¡Todo bien, detenemos ciclo!
+        else:
+            # Si llegamos aquí, hubo algún fallo. Si ya fue el último ciclo, manda WhatsApp de error
+            if ciclo == CICLOS_REINTENTO:
+                if falla_pagaqui:
+                    enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Pagaqui tras varios intentos. Revisa manualmente.")
+                if falla_bait:
+                    enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Recargaqui/BAIT tras varios intentos. Revisa manualmente.")
+                exit(1)
+            else:
+                print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
+                time.sleep(10)
