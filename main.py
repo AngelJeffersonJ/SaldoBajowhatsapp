@@ -17,8 +17,8 @@ PAGAQUI_PASS = os.getenv("PAGAQUI_PASS")
 RECARGAQUI_USER = os.getenv("RECARGAQUI_USER")
 RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS")
 
-SALDO_INTENTOS = 3         # Intentos por plataforma antes de reiniciar ciclo
-CICLOS_REINTENTO = 3       # Ciclos totales de todo el proceso (pagaqui + recargaqui)
+SALDO_INTENTOS = 3
+CICLOS_REINTENTO = 3
 
 def enviar_whatsapp(mensaje):
     try:
@@ -76,7 +76,7 @@ def obtener_saldo_pagaqui():
                             if "$" in abonos:
                                 saldo = abonos.split("$")[1].replace(",", "").strip()
                                 saldo = float(saldo)
-                                print(f"Saldo actual Pagaqui: {saldo}")  # <-- IMPRESIÓN AÑADIDA
+                                print(f"Saldo actual Pagaqui: {saldo}")
                                 browser.close()
                                 return saldo
                     except Exception:
@@ -97,7 +97,18 @@ def obtener_saldo_recargaqui():
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
                 page.goto("https://recargaqui.com.mx")
-                # Encuentra el frame de login
+                time.sleep(4)  # Espera a que cargue bien
+
+                # Toma un screenshot para ver qué carga realmente
+                screenshot_path = f"screenshot_recargaqui_intento{intento}.png"
+                page.screenshot(path=screenshot_path, full_page=True)
+                print(f"Screenshot guardado en: {screenshot_path}")
+
+                # Imprime los frames y sus URLs
+                print("Frames encontrados:")
+                for idx, f in enumerate(page.frames):
+                    print(f"  Frame {idx}: {f.url}")
+
                 frame = None
                 for f in page.frames:
                     if "Login.aspx" in f.url:
@@ -178,22 +189,4 @@ if __name__ == "__main__":
             if saldo_pagaqui < 4000:
                 enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Pagaqui: ${saldo_pagaqui:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
             else:
-                print("Saldo Pagaqui fuera del rango crítico, no se envía WhatsApp.")
-
-            if saldo_bait < 4000:
-                enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Recargaqui/BAIT: ${saldo_bait:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
-            else:
-                print("Saldo BAIT fuera del rango crítico, no se envía WhatsApp.")
-
-            break   # ¡Todo bien, detenemos ciclo!
-        else:
-            # Si llegamos aquí, hubo algún fallo. Si ya fue el último ciclo, manda WhatsApp de error
-            if ciclo == CICLOS_REINTENTO:
-                if falla_pagaqui:
-                    enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Pagaqui tras varios intentos. Revisa manualmente.")
-                if falla_bait:
-                    enviar_whatsapp("⚠️ *Error*: No se pudo obtener el saldo de Recargaqui/BAIT tras varios intentos. Revisa manualmente.")
-                exit(1)
-            else:
-                print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
-                time.sleep(10)
+                print("Saldo Pagaqui
