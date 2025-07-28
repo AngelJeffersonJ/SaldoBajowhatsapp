@@ -96,7 +96,7 @@ def obtener_saldo_recargaqui():
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
-                page.goto("https://recargaqui.com.mx")
+                page.goto("https://recargaquiws.com.mx")
                 frame = None
                 for f in page.frames:
                     if "Login.aspx" in f.url:
