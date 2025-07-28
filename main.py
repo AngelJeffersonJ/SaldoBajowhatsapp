@@ -6,8 +6,8 @@ from twilio.rest import Client
 # Twilio Config
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
-WHATSAPP_FROM = "whatsapp:+14155238886"
-WHATSAPP_TO = "whatsapp:+5214492155882"
+WHATSAPP_FROM = "whatsapp:+14155238886"  # Twilio Sandbox
+WHATSAPP_TO = "whatsapp:+5214492155882"  # Cambia si necesitas
 
 # Pagaqui
 PAGAQUI_USER = os.getenv("PAGAQUI_USER")
@@ -41,20 +41,16 @@ def obtener_saldo_pagaqui():
                 page = browser.new_page()
                 page.goto("https://www.pagaqui.com.mx/")
                 page.wait_for_selector('input[name="username"]', timeout=20000)
-
-                # Login
                 page.fill('input[name="username"]', PAGAQUI_USER)
                 page.fill('input[name="password"]', PAGAQUI_PASS)
                 page.click('input[name="entrar"]')
                 time.sleep(3)
-
                 if page.query_selector('input[name="forcelogout"]'):
                     page.check('input[name="forcelogout"]')
                     page.fill('input[name="username"]', PAGAQUI_USER)
                     page.fill('input[name="password"]', PAGAQUI_PASS)
                     page.click('input[name="entrar"]')
                     time.sleep(3)
-
                 page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=20000)
                 nav_links = page.query_selector_all('a.nav-link.dropdown-toggle')
                 for nav in nav_links:
@@ -65,7 +61,6 @@ def obtener_saldo_pagaqui():
                 page.click('a#ctl00_InfoCuentaLink', timeout=10000)
                 page.wait_for_load_state('networkidle')
                 time.sleep(3)
-
                 filas = page.query_selector_all('div.row')
                 for fila in filas:
                     try:
@@ -75,7 +70,6 @@ def obtener_saldo_pagaqui():
                             if "$" in abonos:
                                 saldo = abonos.split("$")[1].replace(",", "").strip()
                                 saldo = float(saldo)
-                                print(f"Saldo actual Pagaqui: {saldo}")
                                 browser.close()
                                 return saldo
                     except Exception:
@@ -86,7 +80,6 @@ def obtener_saldo_pagaqui():
         except Exception as e:
             print(f"Error playwright: {e}")
         time.sleep(4)
-    print("No se pudo obtener saldo de Pagaqui tras 3 intentos.")
     return None
 
 def obtener_saldo_recargaqui():
@@ -96,24 +89,21 @@ def obtener_saldo_recargaqui():
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
-                page.goto("https://recargaquiws.com.mx")
+                page.goto("https://recargaqui.com.mx")
                 frame = None
                 for f in page.frames:
                     if "Login.aspx" in f.url:
                         frame = f
                         break
-
                 if not frame:
                     print("No se encontró el frame del login")
                     browser.close()
                     return None
-
                 frame.wait_for_selector('input[name="username"]', timeout=12000)
                 frame.fill('input[name="username"]', RECARGAQUI_USER)
                 frame.fill('input[name="password"]', RECARGAQUI_PASS)
                 frame.click('input[name="entrar"]')
                 page.wait_for_timeout(2500)
-
                 if frame.is_visible('input[name="forcelogout"]'):
                     print("Apareció el checkbox de sesión activa, forzando logout y reintentando login...")
                     frame.check('input[name="forcelogout"]')
@@ -121,15 +111,13 @@ def obtener_saldo_recargaqui():
                     frame.fill('input[name="password"]', RECARGAQUI_PASS)
                     frame.click('input[name="entrar"]')
                     page.wait_for_timeout(2500)
-
-                page.goto("https://recargaquiws.com.mx/home.aspx")
+                page.goto("https://recargaqui.com.mx/vtae/home.aspx")
                 try:
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
                     print("No se encontró la tabla de saldos, revisa si el login falló.")
                     browser.close()
                     return None
-
                 filas = page.query_selector_all('table.mGrid > tbody > tr')
                 saldo_bait = None
                 for fila in filas:
@@ -144,7 +132,6 @@ def obtener_saldo_recargaqui():
                             except Exception as e:
                                 print("Error convirtiendo saldo:", e)
                             break
-
                 browser.close()
                 if saldo_bait is None:
                     print("No se encontró la fila de BAIT.")
@@ -154,7 +141,6 @@ def obtener_saldo_recargaqui():
         except Exception as e:
             print(f"Error playwright: {e}")
         time.sleep(4)
-    print("No se pudo obtener saldo de BAIT tras 3 intentos.")
     return None
 
 def ciclo_consulta():
@@ -166,27 +152,41 @@ if __name__ == "__main__":
     for ciclo in range(1, CICLOS_REINTENTO + 1):
         print(f"\n===== CICLO GENERAL DE CONSULTA #{ciclo} =====")
         saldo_pagaqui, saldo_bait = ciclo_consulta()
-
         falla_pagaqui = saldo_pagaqui is None
         falla_bait = saldo_bait is None
 
+        # ---- SOLO UN MENSAJE SEGÚN EL CASO ----
         if not falla_pagaqui and not falla_bait:
-            print("\n--- Ambos saldos consultados exitosamente ---")
-            if saldo_pagaqui < 4000:
-                enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Pagaqui: ${saldo_pagaqui:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
+            # Ambos disponibles
+            mensaje = ""
+            if saldo_pagaqui < 4000 or saldo_bait < 4000:
+                urgentes = []
+                if saldo_pagaqui < 4000:
+                    urgentes.append(f"Pagaqui: ${saldo_pagaqui:,.2f}")
+                if saldo_bait < 4000:
+                    urgentes.append(f"Recargaqui/BAIT: ${saldo_bait:,.2f}")
+                mensaje = "⚠️ Saldo bajo o crítico detectado:\n" + "\n".join(urgentes) + "\n¡Revisa tu plataforma y recarga si es necesario!"
             else:
-                print("Saldo Pagaqui fuera del rango crítico, no se envía WhatsApp.")
+                mensaje = (f"Saldos normales:\nPagaqui: ${saldo_pagaqui:,.2f}\nRecargaqui/BAIT: ${saldo_bait:,.2f}\nNo urge recarga.")
+            enviar_whatsapp(mensaje)
+            break
 
-            if saldo_bait < 1500:
-                enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Recargaqui/BAIT: ${saldo_bait:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
-            else:
-                print("Saldo BAIT fuera del rango crítico, no se envía WhatsApp.")
-            break   # Todo bien, salimos del ciclo
+        elif not falla_pagaqui and falla_bait:
+            # Solo Pagaqui disponible
+            mensaje = f"Sólo se pudo consultar saldo de *Pagaqui*:\nSaldo: ${saldo_pagaqui:,.2f}\n(No es urgente, solo informativo)"
+            enviar_whatsapp(mensaje)
+            break
+
+        elif falla_pagaqui and not falla_bait:
+            # Solo Recargaqui disponible
+            mensaje = f"Sólo se pudo consultar saldo de *Recargaqui/BAIT*:\nSaldo: ${saldo_bait:,.2f}\n(No es urgente, solo informativo)"
+            enviar_whatsapp(mensaje)
+            break
+
         else:
-            # Solo imprimir en consola, no enviar WhatsApp si hay error al consultar algún saldo
+            # Ninguno disponible
             if ciclo == CICLOS_REINTENTO:
-                print(f"Error: No se pudo obtener todos los saldos tras {CICLOS_REINTENTO} ciclos.")
-                exit(1)
+                print("No se pudo consultar saldo en ninguna plataforma tras varios intentos.")
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
