@@ -31,7 +31,7 @@ def enviar_whatsapp(mensaje):
         print("Mensaje enviado:", message.sid)
     except Exception as e:
         print(f"Error enviando WhatsApp: {e}")
-        
+
 def obtener_saldo_pagaqui():
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Pagaqui: {intento}")
@@ -76,7 +76,7 @@ def obtener_saldo_pagaqui():
                             if "$" in abonos:
                                 saldo = abonos.split("$")[1].replace(",", "").strip()
                                 saldo = float(saldo)
-                                print(f"Saldo actual Pagaqui: {saldo}")   # <--- AQUI LO IMPRIME!
+                                print(f"Saldo actual Pagaqui: {saldo}")  # <-- IMPRESIÓN AÑADIDA
                                 browser.close()
                                 return saldo
                     except Exception:
