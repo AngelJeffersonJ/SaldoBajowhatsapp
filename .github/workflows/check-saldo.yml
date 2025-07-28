@@ -2,7 +2,7 @@ name: Cheque Saldo Pagaqui
 
 on:
   schedule:
-    - cron: '0 13-21 * * *'  # Corre cada hora de 7am a 3pm MX (ajusta si cambia el horario)
+    - cron: '0 14-00 * * *'  # Corre cada hora de 7am a 3pm MX (ajusta si cambia el horario)
   workflow_dispatch:
 
 jobs:
