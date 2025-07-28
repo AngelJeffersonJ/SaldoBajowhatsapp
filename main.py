@@ -180,7 +180,7 @@ if __name__ == "__main__":
             else:
                 print("Saldo Pagaqui fuera del rango crítico, no se envía WhatsApp.")
 
-            if saldo_bait < 4000:
+            if saldo_bait < 1500:
                 enviar_whatsapp(f"⚠️ Saldo bajo o crítico en Recargaqui/BAIT: ${saldo_bait:,.2f}\n¡Revisa tu plataforma y recarga si es necesario!")
             else:
                 print("Saldo BAIT fuera del rango crítico, no se envía WhatsApp.")
