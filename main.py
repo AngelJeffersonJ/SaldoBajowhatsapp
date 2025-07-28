@@ -122,7 +122,7 @@ def obtener_saldo_recargaqui():
                     frame.click('input[name="entrar"]')
                     page.wait_for_timeout(2500)
 
-                page.goto("https://recargaqui.com.mx/vtae/home.aspx")
+                page.goto("https://recargaquiws.com.mx/vtae/home.aspx")
                 try:
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
