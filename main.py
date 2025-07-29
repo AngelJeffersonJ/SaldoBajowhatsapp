@@ -7,7 +7,7 @@ from twilio.rest import Client
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 WHATSAPP_FROM = "whatsapp:+14155238886"
-WHATSAPP_TO = "whatsapp:+5214492155882"
+WHATSAPP_TO = "whatsapp:+5214492343676"
 
 # Usuarios
 PAGAQUI_USER = os.getenv("PAGAQUI_USER")
@@ -90,7 +90,7 @@ def obtener_saldo_recargaqui():
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
-                page.goto("https://recargaqui.com.mx")
+                page.goto("https://recargaquiws.com.mx")
                 frame = None
                 for f in page.frames:
                     if "Login.aspx" in f.url:
@@ -112,7 +112,7 @@ def obtener_saldo_recargaqui():
                     frame.fill('input[name="password"]', RECARGAQUI_PASS)
                     frame.click('input[name="entrar"]')
                     page.wait_for_timeout(2500)
-                page.goto("https://recargaqui.com.mx/vtae/home.aspx")
+                page.goto("https://recargaquiws.com.mx/home.aspx")
                 try:
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
