@@ -166,7 +166,7 @@ if __name__ == "__main__":
             criticos = []
             if saldo_pagaqui < CRITICO:
                 criticos.append(f"- Pagaqui: ${saldo_pagaqui:,.2f}")
-            if saldo_bait < CRITICO:
+            if saldo_bait < 1500:
                 criticos.append(f"- Recargaqui/BAIT: ${saldo_bait:,.2f}")
 
             if criticos:
