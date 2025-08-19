@@ -244,7 +244,7 @@ def obtener_saldo_recargaqui():
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
-                page.goto("https://recargaquiws.com.mx", wait_until="domcontentloaded", timeout=30000)
+                page.goto("https://recargaqui.com.mx", wait_until="domcontentloaded", timeout=30000)
 
                 # Buscar frame de Login.aspx
                 frame = None
@@ -386,4 +386,5 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
