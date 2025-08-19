@@ -55,7 +55,7 @@ def obtener_saldo_pagaqui():
                     else:
                         page.check('input[name="forcelogout"]')
                     page.fill('#username', PAGAQUI_USER)
-                    page.fill('#psw', PAGAQUI_PASS)
+                    page.fill('#password', PAGAQUI_PASS)
                     page.click('#btnEntrar')
                     time.sleep(3)
 
@@ -206,6 +206,7 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
 
