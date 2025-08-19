@@ -7,7 +7,7 @@ from twilio.rest import Client
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 WHATSAPP_FROM = "whatsapp:+14155238886"
-WHATSAPP_TO = "whatsapp:+5214492343676")
+WHATSAPP_TO = "whatsapp:+5214492343676"
 
 # Usuarios
 PAGAQUI_USER = os.getenv("PAGAQUI_USER")
@@ -211,3 +211,4 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
