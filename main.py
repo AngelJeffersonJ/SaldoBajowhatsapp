@@ -39,26 +39,27 @@ def obtener_saldo_pagaqui():
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page()
+                page.goto("https://www.pagaqui.com.mx/login.aspx")
 
-                page.goto("https://www.pagaqui.com.mx/")
-                # NUEVOS selectores de login
+                # === NUEVOS SELECTORES DE LOGIN ===
                 page.wait_for_selector('#username', timeout=20000)
                 page.fill('#username', PAGAQUI_USER)
-                page.fill('#password', PAGAQUI_PASS)
-                page.click('#btnEntrar')
+                page.fill('#psw', PAGAQUI_PASS)           # <- antes era #password
+                page.click('#btnEntrar')                  # <- antes era input[name="entrar"]
                 time.sleep(3)
 
-                # NUEVO checkbox de sesión activa
+                # === NUEVO CHECKBOX DE SESIÓN ACTIVA ===
                 if page.query_selector('#forcelogout') or page.query_selector('input[name="forcelogout"]'):
                     if page.query_selector('#forcelogout'):
                         page.check('#forcelogout')
                     else:
                         page.check('input[name="forcelogout"]')
                     page.fill('#username', PAGAQUI_USER)
-                    page.fill('#password', PAGAQUI_PASS)
+                    page.fill('#psw', PAGAQUI_PASS)
                     page.click('#btnEntrar')
                     time.sleep(3)
 
+                # Menú Administración -> Información de cuenta (igual que tu script)
                 page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=20000)
                 nav_links = page.query_selector_all('a.nav-link.dropdown-toggle')
                 for nav in nav_links:
@@ -66,16 +67,15 @@ def obtener_saldo_pagaqui():
                         nav.click()
                         break
                 time.sleep(1.2)
-
                 page.click('a#ctl00_InfoCuentaLink', timeout=10000)
                 page.wait_for_load_state('networkidle')
                 time.sleep(3)
 
+                # Leer fila "Saldo Final" -> columna ABONOS (2da col)
                 filas = page.query_selector_all('div.row')
                 for fila in filas:
                     try:
                         cols = fila.query_selector_all('div')
-                        # MISMA lógica: 1a col = "Saldo Final", 2a col = ABONOS con $
                         if len(cols) >= 2 and "Saldo Final" in cols[0].inner_text():
                             abonos = cols[1].inner_text()
                             if "$" in abonos:
@@ -101,8 +101,7 @@ def obtener_saldo_recargaqui():
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
-                page.goto("https://recargaquiws.com.mx")
-
+                page.goto("https://recargaqui.com.mx")
                 frame = None
                 for f in page.frames:
                     if "Login.aspx" in f.url:
@@ -112,13 +111,11 @@ def obtener_saldo_recargaqui():
                     print("No se encontró el frame del login")
                     browser.close()
                     return None
-
                 frame.wait_for_selector('input[name="username"]', timeout=12000)
                 frame.fill('input[name="username"]', RECARGAQUI_USER)
                 frame.fill('input[name="password"]', RECARGAQUI_PASS)
                 frame.click('input[name="entrar"]')
                 page.wait_for_timeout(2500)
-
                 if frame.is_visible('input[name="forcelogout"]'):
                     print("Apareció el checkbox de sesión activa, forzando logout y reintentando login...")
                     frame.check('input[name="forcelogout"]')
@@ -126,15 +123,13 @@ def obtener_saldo_recargaqui():
                     frame.fill('input[name="password"]', RECARGAQUI_PASS)
                     frame.click('input[name="entrar"]')
                     page.wait_for_timeout(2500)
-
-                page.goto("https://recargaquiws.com.mx/home.aspx")
+                page.goto("https://recargaqui.com.mx/vtae/home.aspx")
                 try:
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
                     print("No se encontró la tabla de saldos, revisa si el login falló.")
                     browser.close()
                     return None
-
                 filas = page.query_selector_all('table.mGrid > tbody > tr')
                 saldo_bait = None
                 for fila in filas:
@@ -211,4 +206,3 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
-
