@@ -39,7 +39,7 @@ def obtener_saldo_pagaqui():
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
                 page = browser.new_page()
-                page.goto("https://www.pagaqui.com.mx/login.aspx")
+                page.goto("https://www.pagaqui.com.mx")
 
                 # === NUEVOS SELECTORES DE LOGIN ===
                 page.wait_for_selector('#username', timeout=20000)
@@ -206,5 +206,6 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
