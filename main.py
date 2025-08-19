@@ -44,7 +44,7 @@ def obtener_saldo_pagaqui():
                 # === NUEVOS SELECTORES DE LOGIN ===
                 page.wait_for_selector('#username', timeout=20000)
                 page.fill('#username', PAGAQUI_USER)
-                page.fill('#psw', PAGAQUI_PASS)           # <- antes era #password
+                page.fill('#password', PAGAQUI_PASS)           # <- antes era #password
                 page.click('#btnEntrar')                  # <- antes era input[name="entrar"]
                 time.sleep(3)
 
@@ -206,6 +206,7 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
 
