@@ -41,25 +41,39 @@ def obtener_saldo_pagaqui():
                 page = browser.new_page()
                 page.goto("https://www.pagaqui.com.mx")
 
-                # === NUEVOS SELECTORES DE LOGIN ===
+                # === LOGIN ===
                 page.wait_for_selector('#username', timeout=20000)
                 page.fill('#username', PAGAQUI_USER)
-                page.fill('#password', PAGAQUI_PASS)           # <- antes era #password
-                page.click('#btnEntrar')                  # <- antes era input[name="entrar"]
+
+                # Buscar si existe #password o #psw
+                if page.query_selector('#password'):
+                    page.fill('#password', PAGAQUI_PASS)
+                elif page.query_selector('#psw'):
+                    page.fill('#psw', PAGAQUI_PASS)
+                else:
+                    print("No se encontró campo de contraseña (#password o #psw)")
+                    browser.close()
+                    return None
+
+                page.click('#btnEntrar')
                 time.sleep(3)
 
-                # === NUEVO CHECKBOX DE SESIÓN ACTIVA ===
+                # === CHECKBOX DE SESIÓN ACTIVA ===
                 if page.query_selector('#forcelogout') or page.query_selector('input[name="forcelogout"]'):
+                    print("Sesión activa detectada, forzando logout...")
                     if page.query_selector('#forcelogout'):
                         page.check('#forcelogout')
                     else:
                         page.check('input[name="forcelogout"]')
                     page.fill('#username', PAGAQUI_USER)
-                    page.fill('#password', PAGAQUI_PASS)
+                    if page.query_selector('#password'):
+                        page.fill('#password', PAGAQUI_PASS)
+                    elif page.query_selector('#psw'):
+                        page.fill('#psw', PAGAQUI_PASS)
                     page.click('#btnEntrar')
                     time.sleep(3)
 
-                # Menú Administración -> Información de cuenta (igual que tu script)
+                # Menú Administración -> Información de cuenta
                 page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=20000)
                 nav_links = page.query_selector_all('a.nav-link.dropdown-toggle')
                 for nav in nav_links:
@@ -71,7 +85,7 @@ def obtener_saldo_pagaqui():
                 page.wait_for_load_state('networkidle')
                 time.sleep(3)
 
-                # Leer fila "Saldo Final" -> columna ABONOS (2da col)
+                # Leer fila "Saldo Final"
                 filas = page.query_selector_all('div.row')
                 for fila in filas:
                     try:
@@ -168,7 +182,6 @@ if __name__ == "__main__":
         falla_pagaqui = saldo_pagaqui is None
         falla_bait = saldo_bait is None
 
-        # Si ambos se obtuvieron exitosamente
         if not falla_pagaqui and not falla_bait:
             print("\n--- Ambos saldos consultados exitosamente ---")
             print(f"Saldo Pagaqui: {saldo_pagaqui}")
@@ -186,8 +199,6 @@ if __name__ == "__main__":
             else:
                 print("Ningún saldo crítico, no se envía WhatsApp.")
             break
-
-        # Si hay fallos, espera al último ciclo para notificar
         else:
             if ciclo == CICLOS_REINTENTO:
                 msj = "⚠️ *Error consulta de saldo:*"
@@ -206,8 +217,3 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
-
-
-
-
-
