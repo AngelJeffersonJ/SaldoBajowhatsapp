@@ -115,51 +115,57 @@ def obtener_saldo_recargaqui():
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, slow_mo=200)
                 page = browser.new_page()
-                page.goto("https://recargaquiws.com.mx/login.aspx")
-                frame.wait_for_selector('input[name="username"]', timeout=12000)
-                frame.fill('input[name="username"]', RECARGAQUI_USER)
-                frame.fill('input[name="password"]', RECARGAQUI_PASS)
-                frame.click('input[name="entrar"]')
-                page.wait_for_timeout(2500)
-                if frame.is_visible('input[name="forcelogout"]'):
-                    print("Apareció el checkbox de sesión activa, forzando logout y reintentando login...")
-                    frame.check('input[name="forcelogout"]')
-                    frame.fill('input[name="input username"]', RECARGAQUI_USER)
-                    frame.fill('input[name="input password"]', RECARGAQUI_PASS)
-                    frame.click('input[name="entrar"]')
-                    page.wait_for_timeout(2500)
-                page.goto("https://recargaquiws.com.mx/home.aspx")
+                page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
+
+                # === LOGIN DIRECTO (no hay frame) ===
+                page.wait_for_selector('input[name="username"]', timeout=12000)
+                page.fill('input[name="username"]', RECARGAQUI_USER)
+                page.fill('input[name="password"]', RECARGAQUI_PASS)
+                page.click('input#entrar')  # el botón tiene id="entrar"
+
+                # Esperar postback/redirección
+                page.wait_for_load_state("networkidle", timeout=20000)
+
+                # Ir al home (por si no redirige solo)
+                if "home.aspx" not in page.url.lower():
+                    page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
+                    page.wait_for_load_state("networkidle", timeout=20000)
+
+                # === TABLA DE SALDOS ===
                 try:
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
                     print("No se encontró la tabla de saldos, revisa si el login falló.")
                     browser.close()
                     return None
+
                 filas = page.query_selector_all('table.mGrid > tbody > tr')
                 saldo_bait = None
                 for fila in filas:
                     celdas = fila.query_selector_all('td')
-                    if len(celdas) >= 6:
-                        nombre = celdas[0].inner_text().strip()
-                        if nombre.upper() == "BAIT":
-                            saldo_txt = celdas[-1].inner_text().replace("$", "").replace(",", "").strip()
+                    if len(celdas) >= 2:
+                        nombre = (celdas[0].inner_text() or "").strip().upper()
+                        if nombre == "BAIT":
+                            saldo_txt = (celdas[-1].inner_text() or "").replace("$", "").replace(",", "").strip()
                             try:
                                 saldo_bait = float(saldo_txt)
                                 print(f"Saldo actual BAIT: {saldo_bait}")
                             except Exception as e:
                                 print("Error convirtiendo saldo:", e)
                             break
+
                 browser.close()
                 if saldo_bait is None:
                     print("No se encontró la fila de BAIT.")
                 return saldo_bait
+
         except PlaywrightTimeout as e:
             print(f"Timeout playwright: {e}")
         except Exception as e:
             print(f"Error playwright: {e}")
         time.sleep(4)
     return None
-
+    
 def ciclo_consulta():
     saldo_pagaqui = obtener_saldo_pagaqui()
     saldo_bait = obtener_saldo_recargaqui()
@@ -208,6 +214,7 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
 
