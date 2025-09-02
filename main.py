@@ -169,6 +169,7 @@ def obtener_saldo_recargaqui():
                     # === LOGOUT SIEMPRE ===
                     page.click('a[href="logout.aspx"]')
                     page.wait_for_load_state("networkidle", timeout=10000)
+                    time.sleep(2)  # da tiempo a que cierre sesión
                     print("Sesión cerrada correctamente en Recargaqui.")
                 except Exception as e:
                     print(f"No se pudo cerrar sesión: {e}")
@@ -227,6 +228,7 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
 
