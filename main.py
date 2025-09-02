@@ -136,7 +136,7 @@ def obtener_saldo_recargaqui():
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
                     print("No se encontró la tabla de saldos, revisa si el login falló.")
-                    # --- LOGOUT por navegación directa (evita timeouts si no hay menú) ---
+                    # --- LOGOUT por navegación directa (robusto) ---
                     try:
                         page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded")
                         page.wait_for_load_state("networkidle", timeout=10000)
@@ -181,7 +181,6 @@ def obtener_saldo_recargaqui():
             print(f"Error playwright: {e}")
         time.sleep(4)
     return None
-
     
 def ciclo_consulta():
     saldo_pagaqui = obtener_saldo_pagaqui()
@@ -231,6 +230,7 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
 
