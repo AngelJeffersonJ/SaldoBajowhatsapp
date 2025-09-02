@@ -122,7 +122,7 @@ def obtener_saldo_recargaqui():
                 page.wait_for_selector('input[name="username"]', timeout=12000)
                 page.fill('input[name="username"]', RECARGAQUI_USER)
                 page.fill('input[name="password"]', RECARGAQUI_PASS)
-                page.click('input#entrar')  # el botón tiene id="entrar"
+                page.click('input#entrar')
 
                 # Esperar postback/redirección
                 page.wait_for_load_state("networkidle", timeout=20000)
@@ -137,6 +137,14 @@ def obtener_saldo_recargaqui():
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
                     print("No se encontró la tabla de saldos, revisa si el login falló.")
+                    # logout antes de salir
+                    try:
+                        page.click('a[href="logout.aspx"]')
+                        page.wait_for_load_state("networkidle", timeout=10000)
+                        print("Sesión cerrada correctamente en Recargaqui.")
+                    except Exception as e:
+                        print(f"No se pudo cerrar sesión: {e}")
+                    browser.close()
                     return None
 
                 filas = page.query_selector_all('table.mGrid > tbody > tr')
@@ -157,26 +165,21 @@ def obtener_saldo_recargaqui():
                 if saldo_bait is None:
                     print("No se encontró la fila de BAIT.")
 
+                # === LOGOUT SIEMPRE ANTES DE CERRAR ===
+                try:
+                    page.click('a[href="logout.aspx"]')
+                    page.wait_for_load_state("networkidle", timeout=10000)
+                    print("Sesión cerrada correctamente en Recargaqui.")
+                except Exception as e:
+                    print(f"No se pudo cerrar sesión: {e}")
+
+                browser.close()
                 return saldo_bait
 
         except PlaywrightTimeout as e:
             print(f"Timeout playwright: {e}")
         except Exception as e:
             print(f"Error playwright: {e}")
-        finally:
-            if browser:
-                try:
-                    # === LOGOUT SIEMPRE ===
-                    page.click('a[href="logout.aspx"]')
-                    page.wait_for_load_state("networkidle", timeout=10000)
-                    time.sleep(2)  # da tiempo a que cierre sesión
-                    print("Sesión cerrada correctamente en Recargaqui.")
-                except Exception as e:
-                    print(f"No se pudo cerrar sesión: {e}")
-                try:
-                    browser.close()
-                except Exception:
-                    pass
         time.sleep(4)
     return None
     
@@ -228,6 +231,7 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
 
