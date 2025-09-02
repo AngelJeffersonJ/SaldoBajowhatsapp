@@ -117,13 +117,11 @@ def obtener_saldo_recargaqui():
                 page = browser.new_page()
                 page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
 
-                # === LOGIN DIRECTO (no hay frame) ===
+                # === LOGIN ===
                 page.wait_for_selector('input[name="username"]', timeout=12000)
                 page.fill('input[name="username"]', RECARGAQUI_USER)
                 page.fill('input[name="password"]', RECARGAQUI_PASS)
-                page.click('input#entrar')  # el botón tiene id="entrar"
-
-                # Esperar postback/redirección
+                page.click('input#entrar')
                 page.wait_for_load_state("networkidle", timeout=20000)
 
                 # Ir al home (por si no redirige solo)
@@ -136,7 +134,7 @@ def obtener_saldo_recargaqui():
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
                     print("No se encontró la tabla de saldos, revisa si el login falló.")
-                    # --- LOGOUT por navegación directa (robusto) ---
+                    # --- LOGOUT directo ---
                     try:
                         page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded")
                         page.wait_for_load_state("networkidle", timeout=10000)
@@ -150,9 +148,9 @@ def obtener_saldo_recargaqui():
                 saldo_bait = None
                 for fila in filas:
                     celdas = fila.query_selector_all('td')
-                    if len(celdas) >= 2:
-                        nombre = (celdas[0].inner_text() or "").strip().upper()
-                        if nombre == "BAIT":
+                    if len(celdas) >= 6:
+                        nombre = (celdas[0].inner_text() or "").strip()
+                        if nombre.upper() == "BAIT":
                             saldo_txt = (celdas[-1].inner_text() or "").replace("$", "").replace(",", "").strip()
                             try:
                                 saldo_bait = float(saldo_txt)
@@ -164,7 +162,7 @@ def obtener_saldo_recargaqui():
                 if saldo_bait is None:
                     print("No se encontró la fila de BAIT.")
 
-                # --- LOGOUT por navegación directa (siempre) ---
+                # --- LOGOUT directo (siempre) ---
                 try:
                     page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded")
                     page.wait_for_load_state("networkidle", timeout=10000)
@@ -230,6 +228,7 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
 
