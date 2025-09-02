@@ -111,6 +111,7 @@ def obtener_saldo_pagaqui():
 def obtener_saldo_recargaqui():
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
+        browser = None
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, slow_mo=200)
@@ -136,7 +137,6 @@ def obtener_saldo_recargaqui():
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
                     print("No se encontró la tabla de saldos, revisa si el login falló.")
-                    browser.close()
                     return None
 
                 filas = page.query_selector_all('table.mGrid > tbody > tr')
@@ -154,15 +154,28 @@ def obtener_saldo_recargaqui():
                                 print("Error convirtiendo saldo:", e)
                             break
 
-                browser.close()
                 if saldo_bait is None:
                     print("No se encontró la fila de BAIT.")
+
                 return saldo_bait
 
         except PlaywrightTimeout as e:
             print(f"Timeout playwright: {e}")
         except Exception as e:
             print(f"Error playwright: {e}")
+        finally:
+            if browser:
+                try:
+                    # === LOGOUT SIEMPRE ===
+                    page.click('a[href="logout.aspx"]')
+                    page.wait_for_load_state("networkidle", timeout=10000)
+                    print("Sesión cerrada correctamente en Recargaqui.")
+                except Exception as e:
+                    print(f"No se pudo cerrar sesión: {e}")
+                try:
+                    browser.close()
+                except Exception:
+                    pass
         time.sleep(4)
     return None
     
@@ -214,6 +227,7 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
 
