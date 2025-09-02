@@ -111,7 +111,6 @@ def obtener_saldo_pagaqui():
 def obtener_saldo_recargaqui():
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
-        browser = None
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, slow_mo=200)
@@ -122,7 +121,7 @@ def obtener_saldo_recargaqui():
                 page.wait_for_selector('input[name="username"]', timeout=12000)
                 page.fill('input[name="username"]', RECARGAQUI_USER)
                 page.fill('input[name="password"]', RECARGAQUI_PASS)
-                page.click('input#entrar')
+                page.click('input#entrar')  # el botón tiene id="entrar"
 
                 # Esperar postback/redirección
                 page.wait_for_load_state("networkidle", timeout=20000)
@@ -137,9 +136,9 @@ def obtener_saldo_recargaqui():
                     page.wait_for_selector('table.mGrid', timeout=25000)
                 except PlaywrightTimeout:
                     print("No se encontró la tabla de saldos, revisa si el login falló.")
-                    # logout antes de salir
+                    # --- LOGOUT por navegación directa (evita timeouts si no hay menú) ---
                     try:
-                        page.click('a[href="logout.aspx"]')
+                        page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded")
                         page.wait_for_load_state("networkidle", timeout=10000)
                         print("Sesión cerrada correctamente en Recargaqui.")
                     except Exception as e:
@@ -165,9 +164,9 @@ def obtener_saldo_recargaqui():
                 if saldo_bait is None:
                     print("No se encontró la fila de BAIT.")
 
-                # === LOGOUT SIEMPRE ANTES DE CERRAR ===
+                # --- LOGOUT por navegación directa (siempre) ---
                 try:
-                    page.click('a[href="logout.aspx"]')
+                    page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded")
                     page.wait_for_load_state("networkidle", timeout=10000)
                     print("Sesión cerrada correctamente en Recargaqui.")
                 except Exception as e:
@@ -182,6 +181,7 @@ def obtener_saldo_recargaqui():
             print(f"Error playwright: {e}")
         time.sleep(4)
     return None
+
     
 def ciclo_consulta():
     saldo_pagaqui = obtener_saldo_pagaqui()
@@ -231,6 +231,7 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
 
