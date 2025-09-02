@@ -133,8 +133,8 @@ def obtener_saldo_recargaqui():
                 if frame.is_visible('input[name="forcelogout"]'):
                     print("Apareció el checkbox de sesión activa, forzando logout y reintentando login...")
                     frame.check('input[name="forcelogout"]')
-                    frame.fill('input[name="username"]', RECARGAQUI_USER)
-                    frame.fill('input[name="password"]', RECARGAQUI_PASS)
+                    frame.fill('input[name="input username"]', RECARGAQUI_USER)
+                    frame.fill('input[name="input password"]', RECARGAQUI_PASS)
                     frame.click('input[name="entrar"]')
                     page.wait_for_timeout(2500)
                 page.goto("https://recargaqui.com.mx/vtae/home.aspx")
@@ -217,4 +217,5 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
