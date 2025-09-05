@@ -130,9 +130,6 @@ def _to_float(texto: str):
 def obtener_saldo_recargaqui():
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
-        browser = None
-        context = None
-        page = None
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
@@ -140,81 +137,98 @@ def obtener_saldo_recargaqui():
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"))
                 page = context.new_page()
-
-                # Login
-                page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
-                page.wait_for_selector('input[name="username"]', timeout=15000)
-                page.fill('input[name="username"]', RECARGAQUI_USER)
-                page.fill('input[name="password"]', RECARGAQUI_PASS)
-
-                # === CHECKBOX DE SESIÓN ACTIVA (force logout) ===
                 try:
-                    if page.query_selector('#forcelogout') or page.query_selector('input[name="forcelogout"]'):
-                        print("Sesión activa detectada en Recargaqui, forzando logout...")
-                        if page.query_selector('#forcelogout'):
-                            page.check('#forcelogout')
-                        else:
-                            page.check('input[name="forcelogout"]')
-                except Exception as e:
-                    print(f"No se pudo marcar force logout en Recargaqui: {e}")
+                    # === LOGIN ===
+                    page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
+                    page.wait_for_selector('input[name="username"]', timeout=15000)
+                    page.fill('input[name="username"]', RECARGAQUI_USER)
+                    page.fill('input[name="password"]', RECARGAQUI_PASS)
 
-                page.click('input#entrar')
+                    # === CHECKBOX DE SESIÓN ACTIVA (force logout) ===
+                    try:
+                        if page.query_selector('#forcelogout') or page.query_selector('input[name="forcelogout"]'):
+                            print("Sesión activa detectada en Recargaqui, forzando logout...")
+                            if page.query_selector('#forcelogout'):
+                                page.check('#forcelogout')
+                            else:
+                                page.check('input[name="forcelogout"]')
+                    except Exception as e:
+                        print(f"No se pudo marcar force logout en Recargaqui: {e}")
 
-                # Esperar a que cargue (o forzar ir a home)
-                try:
-                    page.wait_for_url(re.compile(r"/home\.aspx$", re.I), timeout=15000)
-                except PlaywrightTimeout:
-                    page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
+                    page.click('input#entrar')
 
-                # Esperar la tabla y sus filas de datos (no dependemos de <tbody>)
-                page.wait_for_selector("table.mGrid", timeout=20000)
-                page.wait_for_selector("table.mGrid tr[align='right']", timeout=20000)
+                    # Aterrizar y estabilizar el home
+                    try:
+                        page.wait_for_url(re.compile(r"/home\.aspx$", re.I), timeout=15000)
+                    except PlaywrightTimeout:
+                        page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
+                    page.wait_for_load_state('networkidle', timeout=30000)
 
-                # Confirmar que hay filas
-                filas = page.query_selector_all("table.mGrid tr[align='right']")
-                if not filas:
-                    raise PlaywrightTimeout("La tabla de saldos no tiene filas de datos todavía.")
+                    # === Esperas robustas para la tabla ===
+                    # 1) Espera a que la tabla exista (adjunta), no necesariamente visible
+                    try:
+                        page.wait_for_selector("table.mGrid", state="attached", timeout=35000)
+                    except PlaywrightTimeout:
+                        # Recargar una vez por si el DOM quedó a medias
+                        page.reload(wait_until="domcontentloaded")
+                        page.wait_for_load_state('networkidle', timeout=20000)
+                        page.wait_for_selector("table.mGrid", state="attached", timeout=20000)
 
-                saldo_bait = None
-                for fila in filas:
-                    celdas = fila.query_selector_all("td")
-                    if not celdas:
-                        continue
-                    nombre = (celdas[0].inner_text() or "").strip().upper()
-                    if nombre == "BAIT":
-                        # Última celda es "Saldo Actual" según el HTML
-                        saldo_txt = (celdas[-1].inner_text() or "").strip()
-                        saldo_bait = _to_float(saldo_txt)
-                        print(f"Saldo actual BAIT (parseado): {saldo_bait}  (texto='{saldo_txt}')")
-                        break
+                    # 2) Obtener filas vía JS (aunque no sean visibles todavía)
+                    filas = page.evaluate(
+                        """() => Array.from(document.querySelectorAll("table.mGrid tr[align='right']"))
+                                .map(tr => Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim()))"""
+                    )
 
-                if saldo_bait is None:
-                    print("No se encontró la fila de BAIT en la tabla de saldos.")
+                    saldo_bait = None
+                    if filas:
+                        for celdas in filas:
+                            if not celdas:
+                                continue
+                            nombre = (celdas[0] or "").strip().upper()
+                            if nombre == "BAIT":
+                                saldo_txt = (celdas[-1] or "").strip()
+                                saldo_bait = _to_float(saldo_txt)
+                                print(f"Saldo actual BAIT (parseado): {saldo_bait}  (texto='{saldo_txt}')")
+                                break
+                    else:
+                        # Fallback adicional: intentar localizar filas con locator si evaluate devolvió vacío
+                        page.wait_for_selector("table.mGrid tr[align='right']", state="attached", timeout=15000)
+                        loc_filas = page.query_selector_all("table.mGrid tr[align='right']")
+                        for fila in loc_filas:
+                            celdas = [ (td.inner_text() or "").strip() for td in fila.query_selector_all("td") ]
+                            if not celdas:
+                                continue
+                            if celdas[0].strip().upper() == "BAIT":
+                                saldo_bait = _to_float((celdas[-1] or "").strip())
+                                print(f"Saldo actual BAIT (parseado): {saldo_bait}")
+                                break
 
-                return saldo_bait
+                    if saldo_bait is None:
+                        print("No se encontró la fila de BAIT en la tabla de saldos.")
+
+                    return saldo_bait
+
+                finally:
+                    # Cerrar sesión y recursos DENTRO del 'with' (evita 'Event loop is closed')
+                    try:
+                        page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded", timeout=10000)
+                        print("Sesión cerrada correctamente en Recargaqui.")
+                    except Exception as e:
+                        print(f"No se pudo cerrar sesión: {e}")
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
 
         except PlaywrightTimeout as e:
             print(f"Timeout playwright: {e}")
         except Exception as e:
             print(f"Error playwright: {e}")
-        finally:
-            # Cerrar sesión siempre que sea posible
-            try:
-                if page:
-                    page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded", timeout=10000)
-                    print("Sesión cerrada correctamente en Recargaqui.")
-            except Exception as e:
-                print(f"No se pudo cerrar sesión: {e}")
-            try:
-                if context:
-                    context.close()
-            except:
-                pass
-            try:
-                if browser:
-                    browser.close()
-            except:
-                pass
 
         time.sleep(4)
 
