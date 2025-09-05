@@ -1,4 +1,5 @@
 import os
+import re  # <-- necesario para re.compile y el parser de moneda
 import time
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
@@ -18,7 +19,9 @@ RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS")
 SALDO_INTENTOS = 3
 CICLOS_REINTENTO = 3
 
-CRITICO = 4000
+# Umbrales críticos separados
+CRITICO_PAGAQUI = 3000
+CRITICO_BAIT = 1500
 
 def enviar_whatsapp(mensaje):
     try:
@@ -108,6 +111,22 @@ def obtener_saldo_pagaqui():
         time.sleep(4)
     return None
 
+# ===== Solo soporte para Recargaqui (parser de moneda) =====
+_CURRENCY_RE = re.compile(r"[-+]?\d{1,3}(?:,\d{3})*(?:\.\d+)?|[-+]?\d+(?:\.\d+)?")
+
+def _to_float(texto: str):
+    if not texto:
+        return None
+    t = texto.replace("\xa0", " ").replace("$", " ").strip()
+    m = _CURRENCY_RE.search(t)
+    if not m:
+        return None
+    try:
+        return float(m.group(0).replace(",", ""))
+    except Exception:
+        return None
+# ===========================================================
+
 def obtener_saldo_recargaqui():
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
@@ -127,6 +146,18 @@ def obtener_saldo_recargaqui():
                 page.wait_for_selector('input[name="username"]', timeout=15000)
                 page.fill('input[name="username"]', RECARGAQUI_USER)
                 page.fill('input[name="password"]', RECARGAQUI_PASS)
+
+                # === CHECKBOX DE SESIÓN ACTIVA (force logout) ===
+                try:
+                    if page.query_selector('#forcelogout') or page.query_selector('input[name="forcelogout"]'):
+                        print("Sesión activa detectada en Recargaqui, forzando logout...")
+                        if page.query_selector('#forcelogout'):
+                            page.check('#forcelogout')
+                        else:
+                            page.check('input[name="forcelogout"]')
+                except Exception as e:
+                    print(f"No se pudo marcar force logout en Recargaqui: {e}")
+
                 page.click('input#entrar')
 
                 # Esperar a que cargue (o forzar ir a home)
@@ -208,9 +239,9 @@ if __name__ == "__main__":
             print(f"Saldo BAIT: {saldo_bait}")
 
             criticos = []
-            if saldo_pagaqui < CRITICO:
+            if saldo_pagaqui < CRITICO_PAGAQUI:
                 criticos.append(f"- Pagaqui: ${saldo_pagaqui:,.2f}")
-            if saldo_bait < 1500:
+            if saldo_bait < CRITICO_BAIT:
                 criticos.append(f"- Recargaqui/BAIT: ${saldo_bait:,.2f}")
 
             if criticos:
@@ -237,15 +268,3 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
-
-
-
-
-
-
-
-
-
-
-
-
