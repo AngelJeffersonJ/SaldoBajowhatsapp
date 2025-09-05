@@ -111,73 +111,82 @@ def obtener_saldo_pagaqui():
 def obtener_saldo_recargaqui():
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
+        browser = None
+        context = None
+        page = None
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True, slow_mo=200)
-                page = browser.new_page()
-                page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
+                browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+                context = browser.new_context(locale="es-MX", user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"))
+                page = context.new_page()
 
-                # === LOGIN ===
-                page.wait_for_selector('input[name="username"]', timeout=12000)
+                # Login
+                page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
+                page.wait_for_selector('input[name="username"]', timeout=15000)
                 page.fill('input[name="username"]', RECARGAQUI_USER)
                 page.fill('input[name="password"]', RECARGAQUI_PASS)
                 page.click('input#entrar')
-                page.wait_for_load_state("networkidle", timeout=20000)
 
-                # Ir al home (por si no redirige solo)
-                if "home.aspx" not in page.url.lower():
-                    page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
-                    page.wait_for_load_state("networkidle", timeout=20000)
-
-                # === TABLA DE SALDOS ===
+                # Esperar a que cargue (o forzar ir a home)
                 try:
-                    page.wait_for_selector('table.mGrid', timeout=25000)
+                    page.wait_for_url(re.compile(r"/home\.aspx$", re.I), timeout=15000)
                 except PlaywrightTimeout:
-                    print("No se encontró la tabla de saldos, revisa si el login falló.")
-                    # --- LOGOUT directo ---
-                    try:
-                        page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded")
-                        page.wait_for_load_state("networkidle", timeout=10000)
-                        print("Sesión cerrada correctamente en Recargaqui.")
-                    except Exception as e:
-                        print(f"No se pudo cerrar sesión: {e}")
-                    browser.close()
-                    return None
+                    page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
 
-                filas = page.query_selector_all('table.mGrid > tbody > tr')
+                # Esperar la tabla y sus filas de datos (no dependemos de <tbody>)
+                page.wait_for_selector("table.mGrid", timeout=20000)
+                page.wait_for_selector("table.mGrid tr[align='right']", timeout=20000)
+
+                # Confirmar que hay filas
+                filas = page.query_selector_all("table.mGrid tr[align='right']")
+                if not filas:
+                    raise PlaywrightTimeout("La tabla de saldos no tiene filas de datos todavía.")
+
                 saldo_bait = None
                 for fila in filas:
-                    celdas = fila.query_selector_all('td')
-                    if len(celdas) >= 6:
-                        nombre = (celdas[0].inner_text() or "").strip()
-                        if nombre.upper() == "BAIT":
-                            saldo_txt = (celdas[-1].inner_text() or "").replace("$", "").replace(",", "").strip()
-                            try:
-                                saldo_bait = float(saldo_txt)
-                                print(f"Saldo actual BAIT: {saldo_bait}")
-                            except Exception as e:
-                                print("Error convirtiendo saldo:", e)
-                            break
+                    celdas = fila.query_selector_all("td")
+                    if not celdas:
+                        continue
+                    nombre = (celdas[0].inner_text() or "").strip().upper()
+                    if nombre == "BAIT":
+                        # Última celda es "Saldo Actual" según el HTML
+                        saldo_txt = (celdas[-1].inner_text() or "").strip()
+                        saldo_bait = _to_float(saldo_txt)
+                        print(f"Saldo actual BAIT (parseado): {saldo_bait}  (texto='{saldo_txt}')")
+                        break
 
                 if saldo_bait is None:
-                    print("No se encontró la fila de BAIT.")
+                    print("No se encontró la fila de BAIT en la tabla de saldos.")
 
-                # --- LOGOUT directo (siempre) ---
-                try:
-                    page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded")
-                    page.wait_for_load_state("networkidle", timeout=10000)
-                    print("Sesión cerrada correctamente en Recargaqui.")
-                except Exception as e:
-                    print(f"No se pudo cerrar sesión: {e}")
-
-                browser.close()
                 return saldo_bait
 
         except PlaywrightTimeout as e:
             print(f"Timeout playwright: {e}")
         except Exception as e:
             print(f"Error playwright: {e}")
+        finally:
+            # Cerrar sesión siempre que sea posible
+            try:
+                if page:
+                    page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded", timeout=10000)
+                    print("Sesión cerrada correctamente en Recargaqui.")
+            except Exception as e:
+                print(f"No se pudo cerrar sesión: {e}")
+            try:
+                if context:
+                    context.close()
+            except:
+                pass
+            try:
+                if browser:
+                    browser.close()
+            except:
+                pass
+
         time.sleep(4)
+
     return None
     
 def ciclo_consulta():
@@ -228,6 +237,7 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
 
