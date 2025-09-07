@@ -1,21 +1,25 @@
+# -*- coding: utf-8 -*-
 import os
-import re  # <-- necesario para re.compile y el parser de moneda
+import re
 import time
+import re as _re_mod
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
 
-# Configuración Twilio
+# ===================== Configuración =====================
+# Twilio
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 WHATSAPP_FROM = "whatsapp:+14155238886"
 WHATSAPP_TO = "whatsapp:+5214492343676"
 
-# Usuarios
+# Credenciales
 PAGAQUI_USER = os.getenv("PAGAQUI_USER")
 PAGAQUI_PASS = os.getenv("PAGAQUI_PASS")
 RECARGAQUI_USER = os.getenv("RECARGAQUI_USER")
 RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS")
 
+# Control de reintentos
 SALDO_INTENTOS = 3
 CICLOS_REINTENTO = 3
 
@@ -23,6 +27,88 @@ CICLOS_REINTENTO = 3
 CRITICO_PAGAQUI = 3000
 CRITICO_BAIT = 1500
 
+# ===================== Utilidades de selectores =====================
+USERNAME_SELECTORS = [
+    "#username", "input[name='username']",
+    "input#UserName",
+    "input[id*='user' i]",  # heurística
+    "input[name*='user' i]"
+]
+PASSWORD_SELECTORS = [
+    "#password", "#psw", "input[name='password']",
+    "input#Password",
+    "input[id*='pass' i]",  # heurística
+    "input[name*='pass' i]"
+]
+
+def _find_in_page_or_frames(page, selectors, timeout=20000):
+    """
+    Devuelve (target_context, locator, selector_usado) para el primer selector encontrado con state='attached'
+    en la página o en cualquier iframe. Lanza PlaywrightTimeout si no aparece a tiempo.
+    """
+    deadline = time.time() + (timeout / 1000.0)
+
+    def _try_in_target(target):
+        for css in selectors:
+            try:
+                loc = target.locator(css)
+                if loc.count() > 0:
+                    try:
+                        loc.wait_for(state="attached", timeout=1000)
+                        return target, loc, css
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return None
+
+    while time.time() < deadline:
+        # 1) página
+        found = _try_in_target(page)
+        if found:
+            return found
+        # 2) iframes
+        for fr in page.frames:
+            found = _try_in_target(fr)
+            if found:
+                return found
+        time.sleep(0.2)
+
+    raise PlaywrightTimeout(f"No se encontró ninguno de {selectors} (timeout {timeout} ms)")
+
+def _safe_type(loc, text):
+    """
+    Tipeo robusto: click -> Ctrl+A -> type (con pequeño delay). Útil cuando el input limpia con onfocus.
+    """
+    loc.click()
+    try:
+        loc.press("Control+A")
+    except Exception:
+        pass
+    loc.type(text, delay=20)
+
+def _first_present_locator(target, selectors):
+    """
+    Devuelve el primer locator existente (count>0) entre 'selectors' dentro de 'target', o None.
+    """
+    for sel in selectors:
+        try:
+            loc = target.locator(sel)
+            if loc.count() > 0:
+                return loc.first
+        except Exception:
+            pass
+    return None
+
+def _screenshot(page, prefix):
+    try:
+        path = f"{prefix}_{int(time.time())}.png"
+        page.screenshot(path=path, full_page=True)
+        print(f"Captura guardada: {path}")
+    except Exception as e:
+        print(f"No se pudo guardar captura: {e}")
+
+# ===================== WhatsApp =====================
 def enviar_whatsapp(mensaje):
     try:
         client = Client(TWILIO_SID, TWILIO_TOKEN)
@@ -35,85 +121,8 @@ def enviar_whatsapp(mensaje):
     except Exception as e:
         print(f"Error enviando WhatsApp: {e}")
 
-def obtener_saldo_pagaqui():
-    for intento in range(1, SALDO_INTENTOS + 1):
-        print(f"Intento de consulta de saldo Pagaqui: {intento}")
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto("https://www.pagaqui.com.mx")
-
-                # === LOGIN ===
-                page.wait_for_selector('#username', timeout=20000)
-                page.fill('#username', PAGAQUI_USER)
-
-                # Buscar si existe #password o #psw
-                if page.query_selector('#password'):
-                    page.fill('#password', PAGAQUI_PASS)
-                elif page.query_selector('#psw'):
-                    page.fill('#psw', PAGAQUI_PASS)
-                else:
-                    print("No se encontró campo de contraseña (#password o #psw)")
-                    browser.close()
-                    return None
-
-                page.click('#btnEntrar')
-                time.sleep(3)
-
-                # === CHECKBOX DE SESIÓN ACTIVA ===
-                if page.query_selector('#forcelogout') or page.query_selector('input[name="forcelogout"]'):
-                    print("Sesión activa detectada, forzando logout...")
-                    if page.query_selector('#forcelogout'):
-                        page.check('#forcelogout')
-                    else:
-                        page.check('input[name="forcelogout"]')
-                    page.fill('#username', PAGAQUI_USER)
-                    if page.query_selector('#password'):
-                        page.fill('#password', PAGAQUI_PASS)
-                    elif page.query_selector('#psw'):
-                        page.fill('#psw', PAGAQUI_PASS)
-                    page.click('#btnEntrar')
-                    time.sleep(3)
-
-                # Menú Administración -> Información de cuenta
-                page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=20000)
-                nav_links = page.query_selector_all('a.nav-link.dropdown-toggle')
-                for nav in nav_links:
-                    if "Administración" in nav.inner_text():
-                        nav.click()
-                        break
-                time.sleep(1.2)
-                page.click('a#ctl00_InfoCuentaLink', timeout=10000)
-                page.wait_for_load_state('networkidle')
-                time.sleep(3)
-
-                # Leer fila "Saldo Final"
-                filas = page.query_selector_all('div.row')
-                for fila in filas:
-                    try:
-                        cols = fila.query_selector_all('div')
-                        if len(cols) >= 2 and "Saldo Final" in cols[0].inner_text():
-                            abonos = cols[1].inner_text()
-                            if "$" in abonos:
-                                saldo = abonos.split("$")[1].replace(",", "").strip()
-                                saldo = float(saldo)
-                                print(f"Saldo actual Pagaqui: {saldo}")
-                                browser.close()
-                                return saldo
-                    except Exception:
-                        continue
-                browser.close()
-        except PlaywrightTimeout as e:
-            print(f"Timeout playwright: {e}")
-        except Exception as e:
-            print(f"Error playwright: {e}")
-        time.sleep(4)
-    return None
-
-# ===== Solo soporte para Recargaqui (parser de moneda) =====
+# ===================== Parser de moneda (Recargaqui) =====================
 _CURRENCY_RE = re.compile(r"[-+]?\d{1,3}(?:,\d{3})*(?:\.\d+)?|[-+]?\d+(?:\.\d+)?")
-
 def _to_float(texto: str):
     if not texto:
         return None
@@ -125,59 +134,224 @@ def _to_float(texto: str):
         return float(m.group(0).replace(",", ""))
     except Exception:
         return None
-# ===========================================================
 
+# ===================== Pagaqui =====================
+def _login_pagaqui(page):
+    """
+    Login robusto en Pagaqui: localiza inputs en página o iframes, maneja onfocus y botón de entrar.
+    """
+    page.goto("https://www.pagaqui.com.mx", wait_until="domcontentloaded")
+
+    # Si el login no está directamente, intenta un enlace de acceso
+    try:
+        acc = page.locator("a[href*='Acceso'], a[href*='Login'], a:has-text('Acceso'), a:has-text('Entrar')")
+        if acc.count() > 0:
+            acc.first.click()
+            page.wait_for_load_state("domcontentloaded")
+    except Exception:
+        pass
+
+    try:
+        tgt_user, user_loc, used_user = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=20000)
+        tgt_pass, pass_loc, used_pass = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=20000)
+    except PlaywrightTimeout:
+        _screenshot(page, "pagaqui_login_timeout")
+        raise
+
+    _safe_type(user_loc, PAGAQUI_USER)
+    _safe_type(pass_loc, PAGAQUI_PASS)
+
+    # Botón entrar
+    btn = _first_present_locator(
+        tgt_user,
+        ["#btnEntrar", "button#btnEntrar", "input[type='submit'][value*='Entrar' i]",
+         "button:has-text('Entrar')", "button:has-text('Ingresar')", "input[type='submit']"]
+    )
+    if not btn:
+        _screenshot(page, "pagaqui_btn_timeout")
+        raise RuntimeError("No se encontró el botón para iniciar sesión en Pagaqui.")
+
+    btn.click()
+    page.wait_for_load_state("domcontentloaded")
+    time.sleep(2)
+
+    # Checkbox de sesión activa (si aparece)
+    for sel in ["#forcelogout", "input[name='forcelogout']"]:
+        try:
+            fl = tgt_user.locator(sel)
+            if fl.count() > 0:
+                print("Sesión activa detectada, forzando logout...")
+                fl.check()
+                _safe_type(user_loc, PAGAQUI_USER)
+                _safe_type(pass_loc, PAGAQUI_PASS)
+                btn.click()
+                page.wait_for_load_state("domcontentloaded")
+                time.sleep(2)
+                break
+        except Exception:
+            pass
+
+def _navegar_saldo_pagaqui(page):
+    """
+    Navega al área de 'Información de cuenta' y extrae 'Saldo Final'.
+    """
+    # Menú Administración -> Información de cuenta
+    page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=20000)
+    nav_links = page.locator('a.nav-link.dropdown-toggle')
+    clicked = False
+    for i in range(min(nav_links.count(), 10)):
+        nav = nav_links.nth(i)
+        try:
+            if "Administración" in (nav.inner_text() or ""):
+                nav.click()
+                clicked = True
+                break
+        except Exception:
+            pass
+    if not clicked:
+        # fallback: abre el możulo de cuenta si hay enlace directo
+        try:
+            page.click("a[href*='InfoCuenta'], a#ctl00_InfoCuentaLink", timeout=10000)
+        except Exception:
+            pass
+
+    time.sleep(1.2)
+    try:
+        page.click('a#ctl00_InfoCuentaLink', timeout=10000)
+    except Exception:
+        # intenta selector alterno
+        try:
+            page.click("a[href*='InfoCuenta']", timeout=10000)
+        except Exception:
+            _screenshot(page, "pagaqui_info_link_fail")
+            raise
+
+    page.wait_for_load_state('networkidle')
+    time.sleep(3)
+
+    # Leer 'Saldo Final' desde divs
+    filas = page.query_selector_all('div.row')
+    for fila in filas:
+        try:
+            cols = fila.query_selector_all('div')
+            if len(cols) >= 2 and "Saldo Final" in (cols[0].inner_text() or ""):
+                abonos = cols[1].inner_text() or ""
+                if "$" in abonos:
+                    saldo = abonos.split("$")[1].replace(",", "").strip()
+                    return float(saldo)
+        except Exception:
+            continue
+
+    # fallback: buscar por texto
+    try:
+        possible = page.locator("text=Saldo Final")
+        if possible.count() > 0:
+            container = possible.first.locator("xpath=..")
+            texto = container.inner_text()
+            m = _CURRENCY_RE.search(texto or "")
+            if m:
+                return float(m.group(0).replace(",", ""))
+    except Exception:
+        pass
+
+    _screenshot(page, "pagaqui_parse_fail")
+    return None
+
+def obtener_saldo_pagaqui():
+    for intento in range(1, SALDO_INTENTOS + 1):
+        print(f"Intento de consulta de saldo Pagaqui: {intento}")
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+                try:
+                    _login_pagaqui(page)
+                    saldo = _navegar_saldo_pagaqui(page)
+                    if saldo is not None:
+                        print(f"Saldo actual Pagaqui: {saldo}")
+                        return saldo
+                finally:
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+        except PlaywrightTimeout as e:
+            print(f"Timeout playwright: {e}")
+        except Exception as e:
+            print(f"Error playwright: {e}")
+        time.sleep(4)
+    return None
+
+# ===================== Recargaqui =====================
 def obtener_saldo_recargaqui():
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
-                context = browser.new_context(locale="es-MX", user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"))
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled"]
+                )
+                context = browser.new_context(
+                    locale="es-MX",
+                    user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/120.0.0.0 Safari/537.36")
+                )
                 page = context.new_page()
                 try:
-                    # === LOGIN ===
+                    # === LOGIN (robusto) ===
                     page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
-                    page.wait_for_selector('input[name="username"]', timeout=15000)
-                    page.fill('input[name="username"]', RECARGAQUI_USER)
-                    page.fill('input[name="password"]', RECARGAQUI_PASS)
-
-                    # === CHECKBOX DE SESIÓN ACTIVA (force logout) ===
                     try:
-                        if page.query_selector('#forcelogout') or page.query_selector('input[name="forcelogout"]'):
-                            print("Sesión activa detectada en Recargaqui, forzando logout...")
-                            if page.query_selector('#forcelogout'):
-                                page.check('#forcelogout')
-                            else:
-                                page.check('input[name="forcelogout"]')
-                    except Exception as e:
-                        print(f"No se pudo marcar force logout en Recargaqui: {e}")
+                        _, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=15000)
+                        _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=15000)
+                    except PlaywrightTimeout:
+                        _screenshot(page, "recargaqui_login_timeout")
+                        raise
 
-                    page.click('input#entrar')
+                    _safe_type(user_loc, RECARGAQUI_USER)
+                    _safe_type(pass_loc, RECARGAQUI_PASS)
 
-                    # Aterrizar y estabilizar el home
+                    # Force logout (si existe)
+                    for sel in ["#forcelogout", "input[name='forcelogout']"]:
+                        try:
+                            fl = page.locator(sel)
+                            if fl.count() > 0:
+                                fl.check()
+                                break
+                        except Exception:
+                            pass
+
+                    # Botón entrar
+                    btn = _first_present_locator(page, ["input#entrar", "button:has-text('Entrar')", "input[type='submit']"])
+                    if not btn:
+                        _screenshot(page, "recargaqui_btn_timeout")
+                        raise RuntimeError("No se encontró el botón de 'Entrar' en Recargaqui.")
+                    btn.click()
+
+                    # Aterrizar en home
                     try:
-                        page.wait_for_url(re.compile(r"/home\.aspx$", re.I), timeout=15000)
+                        page.wait_for_url(_re_mod.compile(r"/home\.aspx$", _re_mod.I), timeout=15000)
                     except PlaywrightTimeout:
                         page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
                     page.wait_for_load_state('networkidle', timeout=30000)
 
-                    # === Esperas robustas para la tabla ===
-                    # 1) Espera a que la tabla exista (adjunta), no necesariamente visible
+                    # === Tabla de saldos ===
                     try:
                         page.wait_for_selector("table.mGrid", state="attached", timeout=35000)
                     except PlaywrightTimeout:
-                        # Recargar una vez por si el DOM quedó a medias
                         page.reload(wait_until="domcontentloaded")
                         page.wait_for_load_state('networkidle', timeout=20000)
                         page.wait_for_selector("table.mGrid", state="attached", timeout=20000)
 
-                    # 2) Obtener filas vía JS (aunque no sean visibles todavía)
                     filas = page.evaluate(
                         """() => Array.from(document.querySelectorAll("table.mGrid tr[align='right']"))
-                                .map(tr => Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim()))"""
+                            .map(tr => Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim()))"""
                     )
 
                     saldo_bait = None
@@ -192,11 +366,11 @@ def obtener_saldo_recargaqui():
                                 print(f"Saldo actual BAIT (parseado): {saldo_bait}  (texto='{saldo_txt}')")
                                 break
                     else:
-                        # Fallback adicional: intentar localizar filas con locator si evaluate devolvió vacío
+                        # Fallback por locators
                         page.wait_for_selector("table.mGrid tr[align='right']", state="attached", timeout=15000)
                         loc_filas = page.query_selector_all("table.mGrid tr[align='right']")
                         for fila in loc_filas:
-                            celdas = [ (td.inner_text() or "").strip() for td in fila.query_selector_all("td") ]
+                            celdas = [(td.inner_text() or "").strip() for td in fila.query_selector_all("td")]
                             if not celdas:
                                 continue
                             if celdas[0].strip().upper() == "BAIT":
@@ -206,11 +380,10 @@ def obtener_saldo_recargaqui():
 
                     if saldo_bait is None:
                         print("No se encontró la fila de BAIT en la tabla de saldos.")
-
                     return saldo_bait
 
                 finally:
-                    # Cerrar sesión y recursos DENTRO del 'with' (evita 'Event loop is closed')
+                    # Logout y cierres dentro del with
                     try:
                         page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded", timeout=10000)
                         print("Sesión cerrada correctamente en Recargaqui.")
@@ -233,7 +406,8 @@ def obtener_saldo_recargaqui():
         time.sleep(4)
 
     return None
-    
+
+# ===================== Orquestación =====================
 def ciclo_consulta():
     saldo_pagaqui = obtener_saldo_pagaqui()
     saldo_bait = obtener_saldo_recargaqui()
@@ -259,7 +433,9 @@ if __name__ == "__main__":
                 criticos.append(f"- Recargaqui/BAIT: ${saldo_bait:,.2f}")
 
             if criticos:
-                mensaje = "⚠️ *Saldo bajo o crítico detectado:*\n" + "\n".join(criticos) + "\n¡Revisa tu plataforma y recarga si es necesario!"
+                mensaje = ("⚠️ *Saldo bajo o crítico detectado:*\n"
+                           + "\n".join(criticos)
+                           + "\n¡Revisa tu plataforma y recarga si es necesario!")
                 enviar_whatsapp(mensaje)
             else:
                 print("Ningún saldo crítico, no se envía WhatsApp.")
@@ -270,11 +446,11 @@ if __name__ == "__main__":
                 if falla_pagaqui and falla_bait:
                     msj += "\n- No se pudo obtener el saldo de *Pagaqui* ni *Recargaqui/BAIT* tras varios intentos. Revisa manualmente."
                 elif falla_pagaqui:
-                    msj += f"\n- No se pudo obtener el saldo de *Pagaqui* tras varios intentos."
+                    msj += "\n- No se pudo obtener el saldo de *Pagaqui* tras varios intentos."
                     if saldo_bait is not None:
                         msj += f"\n- Saldo BAIT: ${saldo_bait:,.2f} (no urgente, solo informativo)"
                 elif falla_bait:
-                    msj += f"\n- No se pudo obtener el saldo de *Recargaqui/BAIT* tras varios intentos."
+                    msj += "\n- No se pudo obtener el saldo de *Recargaqui/BAIT* tras varios intentos."
                     if saldo_pagaqui is not None:
                         msj += f"\n- Saldo Pagaqui: ${saldo_pagaqui:,.2f} (no urgente, solo informativo)"
                 enviar_whatsapp(msj)
