@@ -100,14 +100,6 @@ def _first_present_locator(target, selectors):
             pass
     return None
 
-def _screenshot(page, prefix):
-    try:
-        path = f"{prefix}_{int(time.time())}.png"
-        page.screenshot(path=path, full_page=True)
-        print(f"Captura guardada: {path}")
-    except Exception as e:
-        print(f"No se pudo guardar captura: {e}")
-
 # ===================== WhatsApp =====================
 def enviar_whatsapp(mensaje):
     try:
@@ -205,7 +197,6 @@ def _login_pagaqui(page):
         tgt_user, user_loc, used_user = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=20000)
         tgt_pass, pass_loc, used_pass = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=20000)
     except PlaywrightTimeout:
-        _screenshot(page, "pagaqui_login_timeout")
         raise
 
     _safe_type(user_loc, PAGAQUI_USER)
@@ -218,7 +209,6 @@ def _login_pagaqui(page):
          "button:has-text('Entrar')", "button:has-text('Ingresar')", "input[type='submit']"]
     )
     if not btn:
-        _screenshot(page, "pagaqui_btn_timeout")
         raise RuntimeError("No se encontró el botón para iniciar sesión en Pagaqui.")
 
     btn.click()
@@ -273,7 +263,6 @@ def _navegar_saldo_pagaqui(page):
         try:
             page.click("a[href*='InfoCuenta']", timeout=10000)
         except Exception:
-            _screenshot(page, "pagaqui_info_link_fail")
             raise
 
     page.wait_for_load_state('networkidle')
@@ -304,7 +293,6 @@ def _navegar_saldo_pagaqui(page):
     except Exception:
         pass
 
-    _screenshot(page, "pagaqui_parse_fail")
     return None
 
 def obtener_saldo_pagaqui():
@@ -361,7 +349,6 @@ def obtener_saldo_recargaqui():
                         _, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=15000)
                         _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=15000)
                     except PlaywrightTimeout:
-                        _screenshot(page, "recargaqui_login_timeout")
                         raise
 
                     _safe_type(user_loc, RECARGAQUI_USER)
@@ -380,7 +367,6 @@ def obtener_saldo_recargaqui():
                     # Botón entrar
                     btn = _first_present_locator(page, ["input#entrar", "button:has-text('Entrar')", "input[type='submit']"])
                     if not btn:
-                        _screenshot(page, "recargaqui_btn_timeout")
                         raise RuntimeError("No se encontró el botón de 'Entrar' en Recargaqui.")
                     btn.click()
 
