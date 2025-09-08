@@ -135,6 +135,56 @@ def _to_float(texto: str):
     except Exception:
         return None
 
+# ---- Helpers adicionales para Recargaqui ----
+def _poll_mgrid_rows(page, timeout_ms=45000, interval_ms=400):
+    """
+    Devuelve lista de filas (lista de listas de celdas) tomada vía JS de table.mGrid.
+    Hace polling sin wait_for_selector para esquivar problemas de visibilidad/estilos.
+    """
+    deadline = time.time() + timeout_ms / 1000.0
+    last_err = None
+    while time.time() < deadline:
+        try:
+            filas = page.evaluate(
+                """() => {
+                    const t = document.querySelector("table.mGrid");
+                    if (!t) return [];
+                    return Array.from(t.querySelectorAll("tr[align='right']")).map(tr =>
+                        Array.from(tr.querySelectorAll("td")).map(td => (td.innerText || "").trim())
+                    );
+                }"""
+            )
+            if filas and any(row for row in filas if len(row) >= 2):
+                return filas
+        except Exception as e:
+            last_err = e
+        time.sleep(interval_ms / 1000.0)
+    if last_err:
+        print(f"[poll] último error silencioso: {last_err}")
+    return []
+
+def _extract_bait_from_html(html: str):
+    """
+    Fallback de parseo directo desde el HTML cuando el DOM no coopera.
+    Busca la fila cuyo primer <td> sea 'BAIT' y devuelve el último <td> como float.
+    """
+    try:
+        m = re.search(
+            r"<tr[^>]*align=['\"]right['\"][^>]*>\s*<td[^>]*align=['\"]left['\"][^>]*>\s*BAIT\s*</td>(.*?)</tr>",
+            html, re.S | re.I
+        )
+        if not m:
+            return None
+        row_html = m.group(0)
+        tds = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.S | re.I)
+        if not tds:
+            return None
+        last_td_text = re.sub(r"<[^>]+>", "", tds[-1]).strip()
+        return _to_float(last_td_text)
+    except Exception as e:
+        print(f"Regex fallback error: {e}")
+        return None
+
 # ===================== Pagaqui =====================
 def _login_pagaqui(page):
     """
@@ -209,7 +259,7 @@ def _navegar_saldo_pagaqui(page):
         except Exception:
             pass
     if not clicked:
-        # fallback: abre el możulo de cuenta si hay enlace directo
+        # fallback: abre el módulo de cuenta si hay enlace directo
         try:
             page.click("a[href*='InfoCuenta'], a#ctl00_InfoCuentaLink", timeout=10000)
         except Exception:
@@ -334,26 +384,23 @@ def obtener_saldo_recargaqui():
                         raise RuntimeError("No se encontró el botón de 'Entrar' en Recargaqui.")
                     btn.click()
 
-                    # Aterrizar en home
+                    # Aterrizar en home con fallback explícito
                     try:
                         page.wait_for_url(_re_mod.compile(r"/home\.aspx$", _re_mod.I), timeout=15000)
                     except PlaywrightTimeout:
                         page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
-                    page.wait_for_load_state('networkidle', timeout=30000)
 
-                    # === Tabla de saldos ===
+                    # "Nudge": click en Inicio si existe para forzar render
                     try:
-                        page.wait_for_selector("table.mGrid", state="attached", timeout=35000)
-                    except PlaywrightTimeout:
-                        page.reload(wait_until="domcontentloaded")
-                        page.wait_for_load_state('networkidle', timeout=20000)
-                        page.wait_for_selector("table.mGrid", state="attached", timeout=20000)
+                        mi = page.locator("#ctl00_mInicio, a[href='home.aspx']")
+                        if mi.count() > 0:
+                            mi.first.click()
+                            page.wait_for_load_state("domcontentloaded")
+                    except Exception:
+                        pass
 
-                    filas = page.evaluate(
-                        """() => Array.from(document.querySelectorAll("table.mGrid tr[align='right']"))
-                            .map(tr => Array.from(tr.querySelectorAll("td")).map(td => td.innerText.trim()))"""
-                    )
-
+                    # === Tabla de saldos (sin wait_for_selector) ===
+                    filas = _poll_mgrid_rows(page, timeout_ms=45000, interval_ms=400)
                     saldo_bait = None
                     if filas:
                         for celdas in filas:
@@ -361,25 +408,19 @@ def obtener_saldo_recargaqui():
                                 continue
                             nombre = (celdas[0] or "").strip().upper()
                             if nombre == "BAIT":
-                                saldo_txt = (celdas[-1] or "").strip()
-                                saldo_bait = _to_float(saldo_txt)
-                                print(f"Saldo actual BAIT (parseado): {saldo_bait}  (texto='{saldo_txt}')")
-                                break
-                    else:
-                        # Fallback por locators
-                        page.wait_for_selector("table.mGrid tr[align='right']", state="attached", timeout=15000)
-                        loc_filas = page.query_selector_all("table.mGrid tr[align='right']")
-                        for fila in loc_filas:
-                            celdas = [(td.inner_text() or "").strip() for td in fila.query_selector_all("td")]
-                            if not celdas:
-                                continue
-                            if celdas[0].strip().upper() == "BAIT":
                                 saldo_bait = _to_float((celdas[-1] or "").strip())
-                                print(f"Saldo actual BAIT (parseado): {saldo_bait}")
+                                print(f"Saldo actual BAIT (parseado vía DOM): {saldo_bait}")
                                 break
 
+                    # Fallback final: parseo por HTML completo
                     if saldo_bait is None:
-                        print("No se encontró la fila de BAIT en la tabla de saldos.")
+                        html = page.content()
+                        saldo_bait = _extract_bait_from_html(html)
+                        if saldo_bait is not None:
+                            print(f"Saldo actual BAIT (parseado vía HTML): {saldo_bait}")
+                        else:
+                            print("No se encontró la fila de BAIT en la tabla de saldos (DOM/HTML).")
+
                     return saldo_bait
 
                 finally:
