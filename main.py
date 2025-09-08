@@ -1,25 +1,106 @@
+# -*- coding: utf-8 -*-
 import os
+import re
 import time
+import re as _re_mod
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
 
-# Configuración Twilio
+# ===================== Configuración =====================
+# Twilio
 TWILIO_SID = os.getenv("TWILIO_SID")
 TWILIO_TOKEN = os.getenv("TWILIO_TOKEN")
 WHATSAPP_FROM = "whatsapp:+14155238886"
 WHATSAPP_TO = "whatsapp:+5214492343676"
 
-# Usuarios
+# Credenciales
 PAGAQUI_USER = os.getenv("PAGAQUI_USER")
 PAGAQUI_PASS = os.getenv("PAGAQUI_PASS")
 RECARGAQUI_USER = os.getenv("RECARGAQUI_USER")
 RECARGAQUI_PASS = os.getenv("RECARGAQUI_PASS")
 
+# Control de reintentos
 SALDO_INTENTOS = 3
 CICLOS_REINTENTO = 3
 
-CRITICO = 4000
+# Umbrales críticos separados
+CRITICO_PAGAQUI = 3000
+CRITICO_BAIT = 1500
 
+# ===================== Utilidades de selectores =====================
+USERNAME_SELECTORS = [
+    "#username", "input[name='username']",
+    "input#UserName",
+    "input[id*='user' i]",  # heurística
+    "input[name*='user' i]"
+]
+PASSWORD_SELECTORS = [
+    "#password", "#psw", "input[name='password']",
+    "input#Password",
+    "input[id*='pass' i]",  # heurística
+    "input[name*='pass' i]"
+]
+
+def _find_in_page_or_frames(page, selectors, timeout=20000):
+    """
+    Devuelve (target_context, locator, selector_usado) para el primer selector encontrado con state='attached'
+    en la página o en cualquier iframe. Lanza PlaywrightTimeout si no aparece a tiempo.
+    """
+    deadline = time.time() + (timeout / 1000.0)
+
+    def _try_in_target(target):
+        for css in selectors:
+            try:
+                loc = target.locator(css)
+                if loc.count() > 0:
+                    try:
+                        loc.wait_for(state="attached", timeout=1000)
+                        return target, loc, css
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return None
+
+    while time.time() < deadline:
+        # 1) página
+        found = _try_in_target(page)
+        if found:
+            return found
+        # 2) iframes
+        for fr in page.frames:
+            found = _try_in_target(fr)
+            if found:
+                return found
+        time.sleep(0.2)
+
+    raise PlaywrightTimeout(f"No se encontró ninguno de {selectors} (timeout {timeout} ms)")
+
+def _safe_type(loc, text):
+    """
+    Tipeo robusto: click -> Ctrl+A -> type (con pequeño delay). Útil cuando el input limpia con onfocus.
+    """
+    loc.click()
+    try:
+        loc.press("Control+A")
+    except Exception:
+        pass
+    loc.type(text, delay=20)
+
+def _first_present_locator(target, selectors):
+    """
+    Devuelve el primer locator existente (count>0) entre 'selectors' dentro de 'target', o None.
+    """
+    for sel in selectors:
+        try:
+            loc = target.locator(sel)
+            if loc.count() > 0:
+                return loc.first
+        except Exception:
+            pass
+    return None
+
+# ===================== WhatsApp =====================
 def enviar_whatsapp(mensaje):
     try:
         client = Client(TWILIO_SID, TWILIO_TOKEN)
@@ -32,75 +113,242 @@ def enviar_whatsapp(mensaje):
     except Exception as e:
         print(f"Error enviando WhatsApp: {e}")
 
+# ===================== Parser de moneda =====================
+_CURRENCY_RE = re.compile(r"[-+]?\d{1,3}(?:,\d{3})*(?:\.\d+)?|[-+]?\d+(?:\.\d+)?")
+def _to_float(texto: str):
+    if not texto:
+        return None
+    t = texto.replace("\xa0", " ").replace("$", " ").strip()
+    m = _CURRENCY_RE.search(t)
+    if not m:
+        return None
+    try:
+        return float(m.group(0).replace(",", ""))
+    except Exception:
+        return None
+
+# ===================== Helpers tabla Recargaqui =====================
+def _poll_mgrid_with_headers(page, timeout_ms=45000, interval_ms=400):
+    """
+    Devuelve (headers:list[str], rows:list[list[str]]) desde table.mGrid leyendo por JS.
+    - headers toma los <th> del <thead>.
+    - rows toma los <td> de cada <tr align='right'> del <tbody>.
+    """
+    deadline = time.time() + timeout_ms / 1000.0
+    last_err = None
+    while time.time() < deadline:
+        try:
+            data = page.evaluate(
+                """() => {
+                    const tbl = document.querySelector("table.mGrid");
+                    if (!tbl) return {headers: [], rows: []};
+                    const headers = Array.from(tbl.querySelectorAll("thead th"))
+                        .map(th => (th.innerText || "").trim());
+                    const rows = Array.from(tbl.querySelectorAll("tbody tr[align='right']")).map(tr =>
+                        Array.from(tr.querySelectorAll("td")).map(td => (td.innerText || "").trim())
+                    );
+                    return {headers, rows};
+                }"""
+            )
+            headers = data.get("headers") or []
+            rows = data.get("rows") or []
+            if headers and rows:
+                return headers, rows
+        except Exception as e:
+            last_err = e
+        time.sleep(interval_ms / 1000.0)
+    if last_err:
+        print(f"[poll headers] último error silencioso: {last_err}")
+    return [], []
+
+def _extract_recargas_bait_from_html(html: str):
+    """
+    Fallback leyendo el HTML COMPLETO:
+      1) Obtiene los <th> de thead para mapear índice de 'Recargas'.
+      2) Toma la fila cuyo primer <td> sea 'BAIT' (case-insensitive).
+      3) Devuelve el valor del <td> en la columna 'Recargas' parseado a float.
+    """
+    try:
+        # 1) Encabezados
+        thead_match = re.search(r"<thead[^>]*>(.*?)</thead>", html, re.S | re.I)
+        if not thead_match:
+            return None
+        thead_html = thead_match.group(1)
+        ths = re.findall(r"<th[^>]*>(.*?)</th>", thead_html, re.S | re.I)
+        headers = [re.sub(r"<[^>]+>", "", th).strip() for th in ths]
+        if not headers:
+            return None
+        # índice de 'Recargas' (case-insensitive, sin espacios extras)
+        idx_recargas = None
+        for i, h in enumerate(headers):
+            if h.strip().lower() == "recargas":
+                idx_recargas = i
+                break
+        if idx_recargas is None:
+            return None
+
+        # 2) Fila BAIT (primer <td> debe decir BAIT)
+        tr_match = re.search(
+            r"<tr[^>]*align=['\"]right['\"][^>]*>\s*<td[^>]*align=['\"]left['\"][^>]*>\s*BAIT\s*</td>(.*?)</tr>",
+            html, re.S | re.I
+        )
+        if not tr_match:
+            return None
+        tr_html = tr_match.group(0)
+
+        # 3) Todas las celdas de esa fila
+        tds = re.findall(r"<td[^>]*>(.*?)</td>", tr_html, re.S | re.I)
+        # Normalizar a texto plano
+        celdas_txt = [re.sub(r"<[^>]+>", "", td).strip() for td in tds]
+        if not celdas_txt or idx_recargas >= len(celdas_txt):
+            return None
+
+        return _to_float(celdas_txt[idx_recargas])
+    except Exception as e:
+        print(f"Regex fallback error: {e}")
+        return None
+
+# ===================== Pagaqui =====================
+def _login_pagaqui(page):
+    """
+    Login robusto en Pagaqui: localiza inputs en página o iframes, maneja onfocus y botón de entrar.
+    """
+    page.goto("https://www.pagaqui.com.mx", wait_until="domcontentloaded")
+
+    # Si el login no está directamente, intenta un enlace de acceso
+    try:
+        acc = page.locator("a[href*='Acceso'], a[href*='Login'], a:has-text('Acceso'), a:has-text('Entrar')")
+        if acc.count() > 0:
+            acc.first.click()
+            page.wait_for_load_state("domcontentloaded")
+    except Exception:
+        pass
+
+    try:
+        tgt_user, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=20000)
+        _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=20000)
+    except PlaywrightTimeout:
+        raise
+
+    _safe_type(user_loc, PAGAQUI_USER)
+    _safe_type(pass_loc, PAGAQUI_PASS)
+
+    # Botón entrar
+    btn = _first_present_locator(
+        tgt_user,
+        ["#btnEntrar", "button#btnEntrar", "input[type='submit'][value*='Entrar' i]",
+         "button:has-text('Entrar')", "button:has-text('Ingresar')", "input[type='submit']"]
+    )
+    if not btn:
+        raise RuntimeError("No se encontró el botón para iniciar sesión en Pagaqui.")
+
+    btn.click()
+    page.wait_for_load_state("domcontentloaded")
+    time.sleep(2)
+
+    # Checkbox de sesión activa (si aparece)
+    for sel in ["#forcelogout", "input[name='forcelogout']"]:
+        try:
+            fl = tgt_user.locator(sel)
+            if fl.count() > 0:
+                print("Sesión activa detectada, forzando logout...")
+                fl.check()
+                _safe_type(user_loc, PAGAQUI_USER)
+                _safe_type(pass_loc, PAGAQUI_PASS)
+                btn.click()
+                page.wait_for_load_state("domcontentloaded")
+                time.sleep(2)
+                break
+        except Exception:
+            pass
+
+def _navegar_saldo_pagaqui(page):
+    """
+    Navega al área de 'Información de cuenta' y extrae 'Saldo Final'.
+    """
+    # Menú Administración -> Información de cuenta
+    page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=20000)
+    nav_links = page.locator('a.nav-link.dropdown-toggle')
+    clicked = False
+    for i in range(min(nav_links.count(), 10)):
+        nav = nav_links.nth(i)
+        try:
+            if "Administración" in (nav.inner_text() or ""):
+                nav.click()
+                clicked = True
+                break
+        except Exception:
+            pass
+    if not clicked:
+        # fallback: abre el módulo de cuenta si hay enlace directo
+        try:
+            page.click("a[href*='InfoCuenta'], a#ctl00_InfoCuentaLink", timeout=10000)
+        except Exception:
+            pass
+
+    time.sleep(1.2)
+    try:
+        page.click('a#ctl00_InfoCuentaLink', timeout=10000)
+    except Exception:
+        # intenta selector alterno
+        try:
+            page.click("a[href*='InfoCuenta']", timeout=10000)
+        except Exception:
+            raise
+
+    page.wait_for_load_state('networkidle')
+    time.sleep(3)
+
+    # Leer 'Saldo Final' desde divs
+    filas = page.query_selector_all('div.row')
+    for fila in filas:
+        try:
+            cols = fila.query_selector_all('div')
+            if len(cols) >= 2 and "Saldo Final" in (cols[0].inner_text() or ""):
+                abonos = cols[1].inner_text() or ""
+                if "$" in abonos:
+                    saldo = abonos.split("$")[1].replace(",", "").strip()
+                    return float(saldo)
+        except Exception:
+            continue
+
+    # fallback: buscar por texto
+    try:
+        possible = page.locator("text=Saldo Final")
+        if possible.count() > 0:
+            container = possible.first.locator("xpath=..")
+            texto = container.inner_text()
+            m = _CURRENCY_RE.search(texto or "")
+            if m:
+                return float(m.group(0).replace(",", ""))
+    except Exception:
+        pass
+
+    return None
+
 def obtener_saldo_pagaqui():
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Pagaqui: {intento}")
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                page = browser.new_page()
-                page.goto("https://www.pagaqui.com.mx")
-
-                # === LOGIN ===
-                page.wait_for_selector('#username', timeout=20000)
-                page.fill('#username', PAGAQUI_USER)
-
-                # Buscar si existe #password o #psw
-                if page.query_selector('#password'):
-                    page.fill('#password', PAGAQUI_PASS)
-                elif page.query_selector('#psw'):
-                    page.fill('#psw', PAGAQUI_PASS)
-                else:
-                    print("No se encontró campo de contraseña (#password o #psw)")
-                    browser.close()
-                    return None
-
-                page.click('#btnEntrar')
-                time.sleep(3)
-
-                # === CHECKBOX DE SESIÓN ACTIVA ===
-                if page.query_selector('#forcelogout') or page.query_selector('input[name="forcelogout"]'):
-                    print("Sesión activa detectada, forzando logout...")
-                    if page.query_selector('#forcelogout'):
-                        page.check('#forcelogout')
-                    else:
-                        page.check('input[name="forcelogout"]')
-                    page.fill('#username', PAGAQUI_USER)
-                    if page.query_selector('#password'):
-                        page.fill('#password', PAGAQUI_PASS)
-                    elif page.query_selector('#psw'):
-                        page.fill('#psw', PAGAQUI_PASS)
-                    page.click('#btnEntrar')
-                    time.sleep(3)
-
-                # Menú Administración -> Información de cuenta
-                page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=20000)
-                nav_links = page.query_selector_all('a.nav-link.dropdown-toggle')
-                for nav in nav_links:
-                    if "Administración" in nav.inner_text():
-                        nav.click()
-                        break
-                time.sleep(1.2)
-                page.click('a#ctl00_InfoCuentaLink', timeout=10000)
-                page.wait_for_load_state('networkidle')
-                time.sleep(3)
-
-                # Leer fila "Saldo Final"
-                filas = page.query_selector_all('div.row')
-                for fila in filas:
+                context = browser.new_context()
+                page = context.new_page()
+                try:
+                    _login_pagaqui(page)
+                    saldo = _navegar_saldo_pagaqui(page)
+                    if saldo is not None:
+                        print(f"Saldo actual Pagaqui: {saldo}")
+                        return saldo
+                finally:
                     try:
-                        cols = fila.query_selector_all('div')
-                        if len(cols) >= 2 and "Saldo Final" in cols[0].inner_text():
-                            abonos = cols[1].inner_text()
-                            if "$" in abonos:
-                                saldo = abonos.split("$")[1].replace(",", "").strip()
-                                saldo = float(saldo)
-                                print(f"Saldo actual Pagaqui: {saldo}")
-                                browser.close()
-                                return saldo
+                        context.close()
                     except Exception:
-                        continue
-                browser.close()
+                        pass
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
         except PlaywrightTimeout as e:
             print(f"Timeout playwright: {e}")
         except Exception as e:
@@ -108,69 +356,132 @@ def obtener_saldo_pagaqui():
         time.sleep(4)
     return None
 
+# ===================== Recargaqui =====================
 def obtener_saldo_recargaqui():
+    """
+    Devuelve el valor de la COLUMNA 'Recargas' para la FILA 'BAIT'.
+    """
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True, slow_mo=200)
-                page = browser.new_page()
-                page.goto("https://recargaquiws.com.mx")
-                frame = None
-                for f in page.frames:
-                    if "Login.aspx" in f.url:
-                        frame = f
-                        break
-                if not frame:
-                    print("No se encontró el frame del login")
-                    browser.close()
-                    return None
-                frame.wait_for_selector('input[name="username"]', timeout=12000)
-                frame.fill('input[name="username"]', RECARGAQUI_USER)
-                frame.fill('input[name="password"]', RECARGAQUI_PASS)
-                frame.click('input[name="entrar"]')
-                page.wait_for_timeout(2500)
-                if frame.is_visible('input[name="forcelogout"]'):
-                    print("Apareció el checkbox de sesión activa, forzando logout y reintentando login...")
-                    frame.check('input[name="forcelogout"]')
-                    frame.fill('input[name="username"]', RECARGAQUI_USER)
-                    frame.fill('input[name="password"]', RECARGAQUI_PASS)
-                    frame.click('input[name="entrar"]')
-                    page.wait_for_timeout(2500)
-                page.goto("https://recargaquiws.com.mx/home.aspx")
+                browser = p.chromium.launch(
+                    headless=True,
+                    args=["--disable-blink-features=AutomationControlled"]
+                )
+                context = browser.new_context(
+                    locale="es-MX",
+                    user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/120.0.0.0 Safari/537.36")
+                )
+                page = context.new_page()
                 try:
-                    page.wait_for_selector('table.mGrid', timeout=25000)
-                except PlaywrightTimeout:
-                    print("No se encontró la tabla de saldos, revisa si el login falló.")
-                    browser.close()
-                    return None
-                filas = page.query_selector_all('table.mGrid > tbody > tr')
-                saldo_bait = None
-                for fila in filas:
-                    celdas = fila.query_selector_all('td')
-                    if len(celdas) >= 6:
-                        nombre = celdas[0].inner_text().strip()
-                        if nombre.upper() == "BAIT":
-                            saldo_txt = celdas[-1].inner_text().replace("$", "").replace(",", "").strip()
-                            try:
-                                saldo_bait = float(saldo_txt)
-                                print(f"Saldo actual BAIT: {saldo_bait}")
-                            except Exception as e:
-                                print("Error convirtiendo saldo:", e)
+                    # === LOGIN (robusto) ===
+                    page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
+                    try:
+                        _, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=15000)
+                        _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=15000)
+                    except PlaywrightTimeout:
+                        raise
+
+                    _safe_type(user_loc, RECARGAQUI_USER)
+                    _safe_type(pass_loc, RECARGAQUI_PASS)
+
+                    # Force logout (si existe)
+                    for sel in ["#forcelogout", "input[name='forcelogout']"]:
+                        try:
+                            fl = page.locator(sel)
+                            if fl.count() > 0:
+                                fl.check()
+                                break
+                        except Exception:
+                            pass
+
+                    # Botón entrar
+                    btn = _first_present_locator(page, ["input#entrar", "button:has-text('Entrar')", "input[type='submit']"])
+                    if not btn:
+                        raise RuntimeError("No se encontró el botón de 'Entrar' en Recargaqui.")
+                    btn.click()
+
+                    # Aterrizar en home con fallback explícito
+                    try:
+                        page.wait_for_url(_re_mod.compile(r"/home\.aspx$", _re_mod.I), timeout=15000)
+                    except PlaywrightTimeout:
+                        page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
+
+                    # "Nudge": click en Inicio si existe para forzar render
+                    try:
+                        mi = page.locator("#ctl00_mInicio, a[href='home.aspx']")
+                        if mi.count() > 0:
+                            mi.first.click()
+                            page.wait_for_load_state("domcontentloaded")
+                    except Exception:
+                        pass
+
+                    # === Leer headers + rows por JS (sin wait_for_selector) ===
+                    headers, rows = _poll_mgrid_with_headers(page, timeout_ms=45000, interval_ms=400)
+
+                    # Buscar índice de la columna 'Recargas'
+                    idx_recargas = None
+                    for i, h in enumerate(headers):
+                        if (h or "").strip().lower() == "recargas":
+                            idx_recargas = i
                             break
-                browser.close()
-                if saldo_bait is None:
-                    print("No se encontró la fila de BAIT.")
-                return saldo_bait
+
+                    saldo_bait_recargas = None
+                    if idx_recargas is not None and rows:
+                        for celdas in rows:
+                            if not celdas:
+                                continue
+                            nombre = (celdas[0] or "").strip().upper()
+                            if nombre == "BAIT":
+                                # Toma el valor de la columna 'Recargas'
+                                if idx_recargas < len(celdas):
+                                    saldo_bait_recargas = _to_float((celdas[idx_recargas] or "").strip())
+                                    print(f"BAIT / Recargas (DOM): {saldo_bait_recargas}")
+                                break
+
+                    # Fallback final: parseo por HTML completo (thead + fila BAIT)
+                    if saldo_bait_recargas is None:
+                        html = page.content()
+                        saldo_bait_recargas = _extract_recargas_bait_from_html(html)
+                        if saldo_bait_recargas is not None:
+                            print(f"BAIT / Recargas (HTML): {saldo_bait_recargas}")
+                        else:
+                            print("No se encontró la fila 'BAIT' o la columna 'Recargas' (DOM/HTML).")
+
+                    return saldo_bait_recargas
+
+                finally:
+                    # Logout y cierres dentro del with
+                    try:
+                        page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded", timeout=10000)
+                        print("Sesión cerrada correctamente en Recargaqui.")
+                    except Exception as e:
+                        print(f"No se pudo cerrar sesión: {e}")
+                    try:
+                        context.close()
+                    except Exception:
+                        pass
+                    try:
+                        browser.close()
+                    except Exception:
+                        pass
+
         except PlaywrightTimeout as e:
             print(f"Timeout playwright: {e}")
         except Exception as e:
             print(f"Error playwright: {e}")
+
         time.sleep(4)
+
     return None
 
+# ===================== Orquestación =====================
 def ciclo_consulta():
     saldo_pagaqui = obtener_saldo_pagaqui()
+    # Ahora 'saldo_bait' es el valor de la columna Recargas para BAIT
     saldo_bait = obtener_saldo_recargaqui()
     return saldo_pagaqui, saldo_bait
 
@@ -183,35 +494,37 @@ if __name__ == "__main__":
         falla_bait = saldo_bait is None
 
         if not falla_pagaqui and not falla_bait:
-            print("\n--- Ambos saldos consultados exitosamente ---")
-            print(f"Saldo Pagaqui: {saldo_pagaqui}")
-            print(f"Saldo BAIT: {saldo_bait}")
+            print("\n--- Ambos valores consultados exitosamente ---")
+            print(f"Saldo Pagaqui (Saldo Final): {saldo_pagaqui}")
+            print(f"BAIT / Recargas: {saldo_bait}")
 
             criticos = []
-            if saldo_pagaqui < CRITICO:
+            if saldo_pagaqui < CRITICO_PAGAQUI:
                 criticos.append(f"- Pagaqui: ${saldo_pagaqui:,.2f}")
-            if saldo_bait < 1500:
-                criticos.append(f"- Recargaqui/BAIT: ${saldo_bait:,.2f}")
+            if saldo_bait < CRITICO_BAIT:
+                criticos.append(f"- Recargaqui/BAIT (Recargas): ${saldo_bait:,.2f}")
 
             if criticos:
-                mensaje = "⚠️ *Saldo bajo o crítico detectado:*\n" + "\n".join(criticos) + "\n¡Revisa tu plataforma y recarga si es necesario!"
+                mensaje = ("⚠️ *Saldo/valor bajo o crítico detectado:*\n"
+                           + "\n".join(criticos)
+                           + "\n¡Revisa tu plataforma y recarga si es necesario!")
                 enviar_whatsapp(mensaje)
             else:
-                print("Ningún saldo crítico, no se envía WhatsApp.")
+                print("Ningún valor crítico, no se envía WhatsApp.")
             break
         else:
             if ciclo == CICLOS_REINTENTO:
-                msj = "⚠️ *Error consulta de saldo:*"
+                msj = "⚠️ *Error de consulta:*"
                 if falla_pagaqui and falla_bait:
-                    msj += "\n- No se pudo obtener el saldo de *Pagaqui* ni *Recargaqui/BAIT* tras varios intentos. Revisa manualmente."
+                    msj += "\n- No se pudo obtener *Pagaqui (Saldo Final)* ni *Recargaqui/BAIT (Recargas)* tras varios intentos. Revisa manualmente."
                 elif falla_pagaqui:
-                    msj += f"\n- No se pudo obtener el saldo de *Pagaqui* tras varios intentos."
+                    msj += "\n- No se pudo obtener *Pagaqui (Saldo Final)* tras varios intentos."
                     if saldo_bait is not None:
-                        msj += f"\n- Saldo BAIT: ${saldo_bait:,.2f} (no urgente, solo informativo)"
+                        msj += f"\n- BAIT / Recargas: ${saldo_bait:,.2f} (solo informativo)"
                 elif falla_bait:
-                    msj += f"\n- No se pudo obtener el saldo de *Recargaqui/BAIT* tras varios intentos."
+                    msj += "\n- No se pudo obtener *Recargaqui/BAIT (Recargas)* tras varios intentos."
                     if saldo_pagaqui is not None:
-                        msj += f"\n- Saldo Pagaqui: ${saldo_pagaqui:,.2f} (no urgente, solo informativo)"
+                        msj += f"\n- Pagaqui (Saldo Final): ${saldo_pagaqui:,.2f} (solo informativo)"
                 enviar_whatsapp(msj)
                 exit(1)
             else:
