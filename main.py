@@ -34,7 +34,7 @@ CICLOS_REINTENTO = int(os.getenv("CICLOS_REINTENTO", "3"))
 
 # Umbrales críticos separados
 CRITICO_PAGAQUI = float(os.getenv("CRITICO_PAGAQUI", "3000"))
-CRITICO_BAIT = float(os.getenv("CRITICO_BAIT", "1500"))
+CRITICO_BAIT   = float(os.getenv("CRITICO_BAIT", "1500"))
 
 # Debug opcional (1 = volcar HTML si la extracción falla)
 DEBUG_DUMP_HTML = os.getenv("DEBUG_DUMP_HTML", "0") == "1"
@@ -68,17 +68,13 @@ PASSWORD_SELECTORS = [
 ]
 
 def _find_in_page_or_frames(page, selectors, timeout=20000):
-    """
-    Devuelve (target_context, locator, selector_usado) para el primer selector encontrado
-    en la página o en cualquier frame. Reintenta hasta 'timeout'.
-    """
+    """Devuelve (target_context, locator, selector_usado) para el primer selector encontrado."""
     deadline = time.time() + (timeout / 1000.0)
 
     def _try_in_target(target):
         for css in selectors:
             try:
                 loc = target.locator(css).first
-                # Espera breve a que aparezca
                 loc.wait_for(state="attached", timeout=600)
                 return target, loc, css
             except Exception:
@@ -86,11 +82,9 @@ def _find_in_page_or_frames(page, selectors, timeout=20000):
         return None
 
     while time.time() < deadline:
-        # probar página principal
         found = _try_in_target(page)
         if found:
             return found
-        # probar frames ya montados
         for fr in page.frames:
             found = _try_in_target(fr)
             if found:
@@ -123,11 +117,7 @@ def _first_present_locator(target, selectors):
 def enviar_whatsapp(mensaje):
     try:
         client = Client(TWILIO_SID, TWILIO_TOKEN)
-        message = client.messages.create(
-            body=mensaje,
-            from_=WHATSAPP_FROM,
-            to=WHATSAPP_TO
-        )
+        message = client.messages.create(body=mensaje, from_=WHATSAPP_FROM, to=WHATSAPP_TO)
         print("Mensaje enviado:", message.sid)
     except Exception as e:
         print(f"Error enviando WhatsApp: {e}")
@@ -148,7 +138,6 @@ def _to_float(texto: str):
         return None
 
 def _norm(s: str) -> str:
-    """minúsculas + sin acentos + trim (para comparar encabezados/valores)."""
     if s is None:
         return ""
     s = unicodedata.normalize("NFD", s)
@@ -156,12 +145,10 @@ def _norm(s: str) -> str:
     return s.strip().lower()
 
 def _norm_laxo(s: str) -> str:
-    """normalización más laxa (colapsa espacios)."""
     return " ".join(_norm(s).split())
 
-# ===================== Pagaqui (como estaba) =====================
+# ===================== Pagaqui (sin cambios) =====================
 def _login_pagaqui(page):
-    """Login robusto en Pagaqui (maneja forcelogout)."""
     page.goto("https://www.pagaqui.com.mx", wait_until="domcontentloaded")
     try:
         acc = page.locator("a[href*='Acceso'], a[href*='Login'], a:has-text('Acceso'), a:has-text('Entrar')")
@@ -172,8 +159,7 @@ def _login_pagaqui(page):
         pass
 
     tgt_user, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=20000)
-    _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=20000)
-
+    _, pass_loc, _     = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=20000)
     _safe_type(user_loc, PAGAQUI_USER)
     _safe_type(pass_loc, PAGAQUI_PASS)
 
@@ -205,7 +191,6 @@ def _login_pagaqui(page):
             pass
 
 def _navegar_saldo_pagaqui(page):
-    """Ir a Información de cuenta y extraer 'Saldo Final'."""
     page.wait_for_selector('a.nav-link.dropdown-toggle', timeout=20000)
     nav_links = page.locator('a.nav-link.dropdown-toggle')
     clicked = False
@@ -258,7 +243,6 @@ def _navegar_saldo_pagaqui(page):
                 return float(m.group(0).replace(",", ""))
     except Exception:
         pass
-
     return None
 
 def obtener_saldo_pagaqui():
@@ -288,58 +272,96 @@ def obtener_saldo_pagaqui():
     return None
 
 # ===================== Recargaqui =====================
+def _try_login_submit_sequence(page, user_loc, pass_loc):
+    """Secuencia robusta para enviar el login."""
+    # 1) Enter en el password
+    try:
+        pass_loc.press("Enter")
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(1.2)
+    except Exception:
+        pass
+
+    # 2) Click en un botón de envío
+    btn = _first_present_locator(page, [
+        "input#entrar", "button#entrar",
+        "button:has-text('Entrar')", "button:has-text('Acceder')",
+        "input[type='submit']", "button[type='submit']",
+        "a:has-text('Entrar')"
+    ])
+    if btn:
+        try:
+            btn.click()
+            page.wait_for_load_state("domcontentloaded")
+            time.sleep(1.2)
+        except Exception:
+            pass
+
+    # 3) Envío del form por JS (ASP.NET WebForms suele tolerar form.submit())
+    try:
+        page.evaluate("""
+            () => {
+              const f = document.querySelector('form');
+              if (f) f.submit();
+            }
+        """)
+        page.wait_for_load_state("domcontentloaded")
+        time.sleep(1.2)
+    except Exception:
+        pass
+
 def _recargaqui_login_and_targets(page):
     """
     Login en Recargaqui y posicionamiento explícito en https://recargaquiws.com.mx/home.aspx.
     Devuelve [page] + frames.
     """
-    # 1) Cargar portada (según tu nota el login vive aquí)
+    # 1) Portada con el login (según tu captura)
     page.goto("https://recargaquiws.com.mx/", wait_until="domcontentloaded")
 
-    # Fallback directo a /login.aspx por si la portada no pinta el form en headless
+    # Encontrar campos en portada; si no están, ir a /login.aspx
     try:
-        tgt_user, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=6000)
-        _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=6000)
+        tgt_user, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=8000)
+        _, pass_loc, _     = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=8000)
     except PlaywrightTimeout:
         page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
         tgt_user, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=15000)
-        _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=15000)
+        _, pass_loc, _       = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=15000)
 
+    # Llenar credenciales
     _safe_type(user_loc, RECARGAQUI_USER)
     _safe_type(pass_loc, RECARGAQUI_PASS)
 
-    # Botón Entrar/Acceder
-    btn = _first_present_locator(tgt_user, [
-        "input#entrar",
-        "button#entrar",
-        "button:has-text('Entrar')",
-        "button:has-text('Acceder')",
-        "input[type='submit']",
-        "button[type='submit']",
-    ])
-    if not btn:
-        btn = _first_present_locator(page, [
-            "input#entrar",
-            "button#entrar",
-            "button:has-text('Entrar')",
-            "button:has-text('Acceder')",
-            "input[type='submit']",
-            "button[type='submit']",
-        ])
-    if not btn:
-        raise RuntimeError("No se encontró el botón de 'Entrar/Acceder' en Recargaqui.")
-    btn.click()
+    # Secuencia de submit
+    _try_login_submit_sequence(page, user_loc, pass_loc)
 
-    # 2) Ir a home.aspx donde está la tabla
-    try:
-        page.wait_for_url(_re_mod.compile(r"/home\.aspx$", _re_mod.I), timeout=20000)
-    except PlaywrightTimeout:
+    # 2) Asegurar home.aspx
+    ok = False
+    for _ in range(3):
         try:
-            page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
-        except Exception:
-            pass
+            page.wait_for_url(_re_mod.compile(r"/home\.aspx$", _re_mod.I), timeout=5000)
+            ok = True
+            break
+        except PlaywrightTimeout:
+            # Intenta forzar navegación
+            try:
+                page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
+            except Exception:
+                pass
+            # si aún estamos en login, reintenta enviar
+            if "login.aspx" in (page.url or "").lower():
+                _try_login_submit_sequence(page, user_loc, pass_loc)
 
-    # Click explícito a INICIO por texto (como en tu captura)
+    # Comprobación por contenido (por si la URL no cambia)
+    try:
+        page.wait_for_selector("table.mGrid", timeout=6000)
+        ok = True
+    except Exception:
+        pass
+
+    if not ok:
+        raise RuntimeError(f"Login falló; URL actual: {page.url}")
+
+    # Opcional: clic explícito a INICIO
     try:
         ini = page.locator("a:has-text('INICIO')")
         if ini.count() > 0:
@@ -348,9 +370,9 @@ def _recargaqui_login_and_targets(page):
     except Exception:
         pass
 
-    # Esperar a que exista al menos una tabla
+    # Asegurar que existan tablas
     try:
-        page.wait_for_selector("table", state="attached", timeout=20000)
+        page.wait_for_selector("table", state="attached", timeout=10000)
     except Exception:
         pass
 
@@ -359,8 +381,8 @@ def _recargaqui_login_and_targets(page):
 def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=400):
     """
     Escanea tablas del 'target' priorizando .mGrid:
-      1) Encuentra fila cuyo primer TD sea exactamente 'BAIT' (normalizado).
-      2) Detecta la columna 'Saldo Actual'; si no existe, usa la última celda numérica.
+      - Fila cuyo primer TD sea exactamente 'BAIT' (normalizado),
+      - Columna 'Saldo Actual' por encabezado; si no, última celda numérica.
     Devuelve float o None.
     """
     deadline = time.time() + timeout_ms / 1000.0
@@ -368,10 +390,7 @@ def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=4
     saldo_header_keys = ["saldo actual", "saldo_actual", "saldo  actual"]
 
     def _is_bait_first_cell(row):
-        if not row:
-            return False
-        first = _norm_laxo(row[0])
-        return first == "bait"
+        return bool(row) and _norm_laxo(row[0]) == "bait"
 
     while time.time() < deadline:
         try:
@@ -379,25 +398,20 @@ def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=4
                 () => {
                   const grab = el => (el?.innerText ?? "").trim();
                   const pick = sel => Array.from(document.querySelectorAll(sel));
-                  // Prioriza .mGrid; si no hay, toma todas
-                  let t = pick("table.mGrid");
+                  let t = pick("table.mGrid");  // prioriza mGrid
                   if (t.length === 0) t = pick("table");
                   return t.map(tbl => {
-                    // Headers
                     let headers = [];
                     const thead = tbl.querySelector("thead tr");
-                    if (thead) {
-                      headers = Array.from(thead.querySelectorAll("th,td")).map(grab);
-                    } else {
+                    if (thead) headers = Array.from(thead.querySelectorAll("th,td")).map(grab);
+                    else {
                       const firstRow = tbl.querySelector("tr");
                       if (firstRow) headers = Array.from(firstRow.querySelectorAll("th,td")).map(grab);
                     }
-                    // Body
                     let bodyRows = Array.from(tbl.querySelectorAll("tbody tr"));
                     if (bodyRows.length === 0) {
                       const trs = Array.from(tbl.querySelectorAll("tr"));
                       bodyRows = trs.filter(tr => tr.querySelectorAll("td").length > 0);
-                      // si usamos la primera fila como headers, quítala del body
                       const usedFirstAsHeader = !thead && !!tbl.querySelector("tr th");
                       if (usedFirstAsHeader && bodyRows.length > 0) bodyRows = bodyRows.slice(1);
                     }
@@ -412,27 +426,27 @@ def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=4
 
             for tbl in tablas:
                 headers = tbl.get("headers") or []
-                rows = tbl.get("rows") or []
+                rows    = tbl.get("rows") or []
                 if not rows:
                     continue
 
                 headers_norm = [_norm_laxo(h) for h in headers]
 
-                # Ubica columna por encabezado
+                # índice de 'Saldo Actual'
                 col_idx = None
                 for i, h in enumerate(headers_norm):
                     if any(key in h for key in saldo_header_keys):
                         col_idx = i
                         break
 
-                # Busca fila BAIT por igualdad estricta en la primera celda
+                # fila BAIT (primera celda exactamente)
                 fila_bait = None
                 for r in rows:
                     if _is_bait_first_cell(r):
                         fila_bait = r
                         break
-                # Fallback: buscar "BAIT" en cualquier celda (menos preferido)
                 if fila_bait is None:
+                    # fallback: BAIT en cualquier celda
                     for r in rows:
                         if any(_norm_laxo(c) == "bait" for c in r):
                             fila_bait = r
@@ -440,11 +454,10 @@ def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=4
                 if fila_bait is None:
                     continue
 
-                # Toma celda candidata
+                # valor candidato
                 if col_idx is not None and col_idx < len(fila_bait):
                     candidato = fila_bait[col_idx]
                 else:
-                    # última celda numérica de la fila; si no hay, última celda
                     nums = [c for c in fila_bait if _to_float(c) is not None]
                     candidato = nums[-1] if nums else (fila_bait[-1] if fila_bait else "")
 
@@ -461,7 +474,6 @@ def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=4
     if last_err:
         print(f"[extraer_bait] último error silencioso: {last_err}")
 
-    # Dump de HTML opcional para diagnóstico
     if DEBUG_DUMP_HTML:
         try:
             html = target.content()
@@ -475,10 +487,7 @@ def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=4
     return None
 
 def obtener_saldo_recargaqui():
-    """
-    Busca el 'Saldo Actual' de BAIT en https://recargaquiws.com.mx/home.aspx (sin asumir 'fila 9').
-    Escanea página y todos los frames. Hace logout al final.
-    """
+    """Obtiene 'Saldo Actual' de BAIT en home.aspx (sin asumir 'fila 9')."""
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
         try:
@@ -537,8 +546,8 @@ def obtener_saldo_recargaqui():
 
 # ===================== Orquestación =====================
 def ciclo_consulta():
-    saldo_pagaqui = obtener_saldo_pagaqui()
-    saldo_bait_actual = obtener_saldo_recargaqui()  # <-- Saldo Actual de BAIT (robusto)
+    saldo_pagaqui     = obtener_saldo_pagaqui()
+    saldo_bait_actual = obtener_saldo_recargaqui()
     return saldo_pagaqui, saldo_bait_actual
 
 if __name__ == "__main__":
@@ -547,7 +556,7 @@ if __name__ == "__main__":
         saldo_pagaqui, saldo_bait = ciclo_consulta()
 
         falla_pagaqui = saldo_pagaqui is None
-        falla_bait = saldo_bait is None
+        falla_bait    = saldo_bait is None
 
         if not falla_pagaqui and not falla_bait:
             print("\n--- Ambos valores consultados exitosamente ---")
