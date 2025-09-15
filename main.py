@@ -365,7 +365,7 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=20000, interval_ms=300):
                 }"""
             )
             # priorizar .mGrid
-            data.sort((lambda a, b: (0 if a.get("isMGrid") else 1) - (0 if b.get("isMGrid") else 1)))
+            data.sort(key=lambda x: 0 if x.get("isMGrid") else 1)
 
             for tbl in data:
                 headers = tbl.get("headers") or []
@@ -396,24 +396,26 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=20000, interval_ms=300):
                 if fila_bait is None:
                     continue
 
-                # valor candidato
-                let candidato = null;
-                if (col_idx !== null && col_idx < fila_bait.length) {
-                    candidato = fila_bait[col_idx];
-                } else {
-                    // última celda numérica
-                    for (let i = fila_bait.length - 1; i >= 0; i--) {
-                        const t = (fila_bait[i] || "").replace(/[\u00a0$,\s]/g, "");
-                        if (t && !isNaN(Number(t))) { candidato = fila_bait[i]; break; }
-                    }
-                    if (!candidato && fila_bait.length > 0) candidato = fila_bait[fila_bait.length - 1];
-                }
-                if (candidato) return {text: candidato};
-            }
-        } catch (e) {
+                # valor candidato (en Python)
+                candidato = None
+                if col_idx is not None and col_idx < len(fila_bait):
+                    candidato = fila_bait[col_idx]
+                else:
+                    # última celda numérica
+                    for cell in reversed(fila_bait):
+                        if _to_float(cell) is not None:
+                            candidato = cell
+                            break
+                    if candidato is None and fila_bait:
+                        candidato = fila_bait[-1]
+
+                if candidato:
+                    return {"text": candidato}
+        except Exception as e:
             last_err = e
-        }
+
         time.sleep(interval_ms / 1000.0)
+
     if last_err:
         print(f"[poll grid] último error silencioso: {last_err}")
     return None
@@ -469,9 +471,9 @@ def _extract_row9_lastcell_from_html(html: str):
                 if col_idx is not None and col_idx < len(cells):
                     return cells[col_idx]
                 # última celda numérica
-                for i in range(len(cells)-1, -1, -1):
-                    if _to_float(cells[i]) is not None:
-                        return cells[i]
+                for cell in reversed(cells):
+                    if _to_float(cell) is not None:
+                        return cell
                 return cells[-1]
         return None
     except Exception as e:
@@ -620,4 +622,3 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
-
