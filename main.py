@@ -36,48 +36,61 @@ CICLOS_REINTENTO = int(os.getenv("CICLOS_REINTENTO", "3"))
 CRITICO_PAGAQUI = float(os.getenv("CRITICO_PAGAQUI", "3000"))
 CRITICO_BAIT = float(os.getenv("CRITICO_BAIT", "1500"))
 
-# Debug opcional (1 = volcar HTML de diagnóstico si falla la extracción)
+# Debug opcional (1 = volcar HTML si la extracción falla)
 DEBUG_DUMP_HTML = os.getenv("DEBUG_DUMP_HTML", "0") == "1"
 
 # ===================== Utilidades de selectores =====================
+# Ampliados para cubrir el login real de Recargaqui y Pagaqui
 USERNAME_SELECTORS = [
-    "#username", "input[name='username']",
+    "#username",
+    "input[name='username']",
     "input#UserName",
     "input[id*='user' i]",
-    "input[name*='user' i]"
+    "input[name*='user' i]",
+    "input.input.username",
+    "input.username",
+    "input[class*='username' i]",
+    "input[placeholder*='usuario' i]",
+    "input[value='Usuario']",
 ]
 PASSWORD_SELECTORS = [
-    "#password", "#psw", "input[name='password']",
+    "#password",
+    "#psw",
+    "input[name='password']",
     "input#Password",
     "input[id*='pass' i]",
-    "input[name*='pass' i]"
+    "input[name*='pass' i]",
+    "input.input.password",
+    "input.password",
+    "input[class*='password' i]",
+    "input[placeholder*='contraseña' i]",
+    "input[type='password']",
 ]
 
 def _find_in_page_or_frames(page, selectors, timeout=20000):
     """
-    Devuelve (target_context, locator, selector_usado) para el primer selector encontrado (state='attached')
-    en la página o en cualquier frame. Lanza PlaywrightTimeout si no aparece a tiempo.
+    Devuelve (target_context, locator, selector_usado) para el primer selector encontrado
+    en la página o en cualquier frame. Reintenta hasta 'timeout'.
     """
     deadline = time.time() + (timeout / 1000.0)
 
     def _try_in_target(target):
         for css in selectors:
             try:
-                loc = target.locator(css)
-                if loc.count() > 0:
-                    try:
-                        loc.wait_for(state="attached", timeout=1000)
-                        return target, loc, css
-                    except Exception:
-                        pass
+                loc = target.locator(css).first
+                # Espera breve a que aparezca
+                loc.wait_for(state="attached", timeout=600)
+                return target, loc, css
             except Exception:
-                pass
+                continue
         return None
 
     while time.time() < deadline:
+        # probar página principal
         found = _try_in_target(page)
         if found:
             return found
+        # probar frames ya montados
         for fr in page.frames:
             found = _try_in_target(fr)
             if found:
@@ -87,7 +100,7 @@ def _find_in_page_or_frames(page, selectors, timeout=20000):
     raise PlaywrightTimeout(f"No se encontró ninguno de {selectors} (timeout {timeout} ms)")
 
 def _safe_type(loc, text):
-    """Click -> Ctrl+A -> type con pequeño delay (maneja onfocus que limpia)."""
+    """Click -> Ctrl+A -> type (maneja onfocus que limpia el valor)."""
     loc.click()
     try:
         loc.press("Control+A")
@@ -146,7 +159,7 @@ def _norm_laxo(s: str) -> str:
     """normalización más laxa (colapsa espacios)."""
     return " ".join(_norm(s).split())
 
-# ===================== Pagaqui (sin cambios funcionales) =====================
+# ===================== Pagaqui (como estaba) =====================
 def _login_pagaqui(page):
     """Login robusto en Pagaqui (maneja forcelogout)."""
     page.goto("https://www.pagaqui.com.mx", wait_until="domcontentloaded")
@@ -263,14 +276,10 @@ def obtener_saldo_pagaqui():
                         print(f"Saldo actual Pagaqui: {saldo}")
                         return saldo
                 finally:
-                    try:
-                        context.close()
-                    except Exception:
-                        pass
-                    try:
-                        browser.close()
-                    except Exception:
-                        pass
+                    try: context.close()
+                    except Exception: pass
+                    try: browser.close()
+                    except Exception: pass
         except PlaywrightTimeout as e:
             print(f"Timeout playwright: {e}")
         except Exception as e:
@@ -284,32 +293,44 @@ def _recargaqui_login_and_targets(page):
     Login en Recargaqui y posicionamiento explícito en https://recargaquiws.com.mx/home.aspx.
     Devuelve [page] + frames.
     """
-    page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
-    tgt_user, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=20000)
-    _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=20000)
+    # 1) Cargar portada (según tu nota el login vive aquí)
+    page.goto("https://recargaquiws.com.mx/", wait_until="domcontentloaded")
+
+    # Fallback directo a /login.aspx por si la portada no pinta el form en headless
+    try:
+        tgt_user, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=6000)
+        _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=6000)
+    except PlaywrightTimeout:
+        page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
+        tgt_user, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=15000)
+        _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=15000)
 
     _safe_type(user_loc, RECARGAQUI_USER)
     _safe_type(pass_loc, RECARGAQUI_PASS)
 
-    # forcelogout si aparece
-    for sel in ["#forcelogout", "input[name='forcelogout']"]:
-        try:
-            fl = tgt_user.locator(sel)
-            if fl.count() > 0:
-                fl.check()
-                break
-        except Exception:
-            pass
-
-    # Entrar
-    btn = _first_present_locator(tgt_user, ["input#entrar", "button:has-text('Entrar')", "input[type='submit']"])
+    # Botón Entrar/Acceder
+    btn = _first_present_locator(tgt_user, [
+        "input#entrar",
+        "button#entrar",
+        "button:has-text('Entrar')",
+        "button:has-text('Acceder')",
+        "input[type='submit']",
+        "button[type='submit']",
+    ])
     if not btn:
-        btn = _first_present_locator(page, ["input#entrar", "button:has-text('Entrar')", "input[type='submit']"])
+        btn = _first_present_locator(page, [
+            "input#entrar",
+            "button#entrar",
+            "button:has-text('Entrar')",
+            "button:has-text('Acceder')",
+            "input[type='submit']",
+            "button[type='submit']",
+        ])
     if not btn:
-        raise RuntimeError("No se encontró el botón de 'Entrar' en Recargaqui.")
+        raise RuntimeError("No se encontró el botón de 'Entrar/Acceder' en Recargaqui.")
     btn.click()
 
-    # Esperar home y forzar home.aspx por si acaso
+    # 2) Ir a home.aspx donde está la tabla
     try:
         page.wait_for_url(_re_mod.compile(r"/home\.aspx$", _re_mod.I), timeout=20000)
     except PlaywrightTimeout:
@@ -318,7 +339,7 @@ def _recargaqui_login_and_targets(page):
         except Exception:
             pass
 
-    # Click explícito a INICIO por texto (como en la UI de tu captura)
+    # Click explícito a INICIO por texto (como en tu captura)
     try:
         ini = page.locator("a:has-text('INICIO')")
         if ini.count() > 0:
@@ -338,7 +359,7 @@ def _recargaqui_login_and_targets(page):
 def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=400):
     """
     Escanea tablas del 'target' priorizando .mGrid:
-      1) Encuentra fila cuyo primer TD sea exactamente 'BAIT' (normalizado) para no confundir con BAT.
+      1) Encuentra fila cuyo primer TD sea exactamente 'BAIT' (normalizado).
       2) Detecta la columna 'Saldo Actual'; si no existe, usa la última celda numérica.
     Devuelve float o None.
     """
@@ -376,7 +397,7 @@ def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=4
                     if (bodyRows.length === 0) {
                       const trs = Array.from(tbl.querySelectorAll("tr"));
                       bodyRows = trs.filter(tr => tr.querySelectorAll("td").length > 0);
-                      // si usamos la primera fila como headers (hay TH en la primera), quítala del body
+                      // si usamos la primera fila como headers, quítala del body
                       const usedFirstAsHeader = !thead && !!tbl.querySelector("tr th");
                       if (usedFirstAsHeader && bodyRows.length > 0) bodyRows = bodyRows.slice(1);
                     }
@@ -410,7 +431,7 @@ def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=4
                     if _is_bait_first_cell(r):
                         fila_bait = r
                         break
-                # Fallback: en cualquier celda (menos preferido)
+                # Fallback: buscar "BAIT" en cualquier celda (menos preferido)
                 if fila_bait is None:
                     for r in rows:
                         if any(_norm_laxo(c) == "bait" for c in r):
@@ -455,7 +476,7 @@ def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=4
 
 def obtener_saldo_recargaqui():
     """
-    Busca el 'Saldo Actual' de BAIT en https://recargaquiws.com.mx/home.aspx sin asumir 'fila 9'.
+    Busca el 'Saldo Actual' de BAIT en https://recargaquiws.com.mx/home.aspx (sin asumir 'fila 9').
     Escanea página y todos los frames. Hace logout al final.
     """
     for intento in range(1, SALDO_INTENTOS + 1):
@@ -500,14 +521,10 @@ def obtener_saldo_recargaqui():
                         print("Sesión cerrada correctamente en Recargaqui.")
                     except Exception as e:
                         print(f"No se pudo cerrar sesión: {e}")
-                    try:
-                        context.close()
-                    except Exception:
-                        pass
-                    try:
-                        browser.close()
-                    except Exception:
-                        pass
+                    try: context.close()
+                    except Exception: pass
+                    try: browser.close()
+                    except Exception: pass
 
         except PlaywrightTimeout as e:
             print(f"Timeout playwright: {e}")
