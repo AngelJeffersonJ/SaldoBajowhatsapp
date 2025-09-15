@@ -3,11 +3,12 @@ import os
 import re
 import time
 import unicodedata
+import tempfile
 import re as _re_mod
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
 
-# (opcional) cargar .env si lo usas en local
+# (opcional) cargar .env si se usa en local
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -34,6 +35,9 @@ CICLOS_REINTENTO = int(os.getenv("CICLOS_REINTENTO", "3"))
 # Umbrales críticos separados
 CRITICO_PAGAQUI = float(os.getenv("CRITICO_PAGAQUI", "3000"))
 CRITICO_BAIT = float(os.getenv("CRITICO_BAIT", "1500"))
+
+# Debug opcional
+DEBUG_DUMP_HTML = os.getenv("DEBUG_DUMP_HTML", "0") == "1"
 
 # ===================== Utilidades de selectores =====================
 USERNAME_SELECTORS = [
@@ -137,6 +141,11 @@ def _norm(s: str) -> str:
     s = unicodedata.normalize("NFD", s)
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
     return s.strip().lower()
+
+def _norm_laxo(s: str) -> str:
+    """normalización más laxa (colapsa espacios)."""
+    s = _norm(s)
+    return " ".join(s.split())
 
 # ===================== Pagaqui =====================
 def _login_pagaqui(page):
@@ -270,10 +279,10 @@ def obtener_saldo_pagaqui():
         time.sleep(4)
     return None
 
-# ===================== Recargaqui =====================
+# ===================== Recargaqui (robusto, sin depender de 'fila 9') =====================
 def _recargaqui_login_and_targets(page):
     """
-    Hace login en Recargaqui y devuelve la lista de targets donde buscar la tabla:
+    Hace login en Recargaqui y devuelve la lista de targets donde buscar la(s) tabla(s):
     [page] + page.frames (frames ya poblados).
     """
     page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
@@ -307,6 +316,7 @@ def _recargaqui_login_and_targets(page):
         except Exception:
             pass
 
+    # Intentar posicionarse en inicio/home
     try:
         mi = page.locator("#ctl00_mInicio, a[href='home.aspx']")
         if mi.count() > 0:
@@ -317,137 +327,125 @@ def _recargaqui_login_and_targets(page):
 
     return [page] + list(page.frames)
 
-def _poll_row9_lastcell_in_target(target, timeout_ms=20000, interval_ms=300):
+def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=400):
     """
-    DOM-first: lee table.mGrid en 'target' y devuelve:
-      - last cell de la fila 9 (1-based) si existe
-      - si la fila 9 NO es BAIT, busca la fila cuyo primer TD sea 'BAIT' y toma su último TD
+    Escanea TODAS las tablas del 'target' (page o frame) sin asumir clase ni fila fija:
+      1) Identifica una fila que contenga 'BAIT' (match laxo).
+      2) Intenta resolver columna por encabezado ('saldo actual', 'saldo', etc.).
+      3) Si no hay encabezado claro, usa la última celda numérica de la fila.
+    Devuelve float o None.
     """
     deadline = time.time() + timeout_ms / 1000.0
     last_err = None
+    col_candidatas = ["saldo actual", "saldo", "saldo act", "saldo_actual"]
+
     while time.time() < deadline:
         try:
-            data = target.evaluate(
-                """() => {
-                    const tbl = document.querySelector("table.mGrid");
-                    if (!tbl) return {rows: []};
-                    // obtener filas del cuerpo
+            tablas = target.evaluate("""
+                () => {
+                  const grabText = el => (el?.innerText ?? "").trim();
+                  const list = Array.from(document.querySelectorAll("table"));
+                  return list.map(tbl => {
+                    // headers
+                    let headers = [];
+                    const theadRow = tbl.querySelector("thead tr");
+                    if (theadRow) {
+                      headers = Array.from(theadRow.querySelectorAll("th,td")).map(grabText);
+                    } else {
+                      const firstRow = tbl.querySelector("tr");
+                      if (firstRow) {
+                        headers = Array.from(firstRow.querySelectorAll("th,td")).map(grabText);
+                      }
+                    }
+                    // body rows
                     let bodyRows = Array.from(tbl.querySelectorAll("tbody tr"));
                     if (bodyRows.length === 0) {
-                        bodyRows = Array.from(tbl.querySelectorAll("tr")).filter(tr => tr.querySelectorAll("td").length > 0);
+                      const trs = Array.from(tbl.querySelectorAll("tr"));
+                      bodyRows = trs.filter(tr => tr.querySelectorAll("td").length > 0);
+                      // si usamos la primera fila como headers, quítala del body
+                      const hasHeaderRow = !theadRow && !!tbl.querySelector("tr th");
+                      if (hasHeaderRow && bodyRows.length > 0) {
+                        bodyRows = bodyRows.slice(1);
+                      }
                     }
-                    const rows = bodyRows.map(tr =>
-                        Array.from(tr.querySelectorAll("td")).map(td => (td.innerText || "").trim())
-                    );
-                    return {rows};
-                }"""
-            )
-            rows = data.get("rows") or []
-            if not rows:
-                time.sleep(interval_ms / 1000.0)
-                continue
+                    const rows = bodyRows.map(tr => Array.from(tr.querySelectorAll("td")).map(grabText));
+                    return { headers, rows };
+                  });
+                }
+            """)
 
-            # 1) Fila 9 -> último valor
-            if len(rows) >= 9:
-                r9 = rows[8]
-                if r9 and len(r9) > 0:
-                    first = r9[0] if len(r9) > 0 else ""
-                    last_cell = r9[-1]
-                    # si no es BAIT, igual usamos fallback por contenido
-                    if (first or "").strip().lower() == "bait":
-                        return last_cell  # texto
-            # 2) Fallback: buscar fila cuyo primer TD sea BAIT y tomar último TD
-            for r in rows:
-                if not r:
+            for tbl in tablas:
+                headers = tbl.get("headers") or []
+                headers_norm = [_norm_laxo(h) for h in headers]
+                rows = tbl.get("rows") or []
+                if not rows:
                     continue
-                first = (r[0] or "").strip().lower()
-                if first == "bait":
-                    return r[-1]
+
+                # Determinar índice de columna por encabezado
+                col_idx = None
+                for cand in col_candidatas:
+                    for i, h in enumerate(headers_norm):
+                        if cand in h:
+                            col_idx = i
+                            break
+                    if col_idx is not None:
+                        break
+
+                # Buscar fila BAIT (prioriza primeras columnas; si no, cualquier celda)
+                fila_bait = None
+                for r in rows:
+                    if not r:
+                        continue
+                    primeros = r[:2] if len(r) >= 2 else r
+                    if any("bait" in _norm_laxo(x) for x in primeros):
+                        fila_bait = r
+                        break
+                if fila_bait is None:
+                    for r in rows:
+                        if any("bait" in _norm_laxo(x) for x in r):
+                            fila_bait = r
+                            break
+                if fila_bait is None:
+                    continue  # en esta tabla no está BAIT
+
+                # Elegir celda candidata
+                if col_idx is not None and col_idx < len(fila_bait):
+                    candidato = fila_bait[col_idx]
+                else:
+                    # última celda numérica; si no hay, última celda
+                    nums = [c for c in fila_bait if _to_float(c) is not None]
+                    candidato = nums[-1] if nums else (fila_bait[-1] if fila_bait else "")
+
+                val = _to_float(candidato)
+                if val is not None:
+                    print(f"BAIT / Saldo detectado: {val}")
+                    return val
+
         except Exception as e:
             last_err = e
 
         time.sleep(interval_ms / 1000.0)
 
     if last_err:
-        print(f"[poll row9] último error silencioso: {last_err}")
-    return None
+        print(f"[extraer_bait] último error silencioso: {last_err}")
 
-def _extract_row9_lastcell_from_html(html: str):
-    """
-    Fallback HTML:
-      - tomar tbody
-      - si hay >=9 filas, devolver último <td> de la fila 9
-      - si la fila 9 no es BAIT, buscar la fila cuyo primer <td> sea BAIT y tomar su último <td>
-    """
-    try:
-        tbody = re.search(r"<tbody[^>]*>(.*?)</tbody>", html, re.S | re.I)
-        if not tbody:
-            return None
-        tbody_html = tbody.group(1)
-        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", tbody_html, re.S | re.I)
-        if not rows:
-            return None
-
-        def _td_texts(row_html):
-            tds = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.S | re.I)
-            return [re.sub(r"<[^>]+>", "", td).strip() for td in tds]
-
-        # 1) fila 9 (1-based), index 8
-        if len(rows) >= 9:
-            r9_cells = _td_texts(rows[8])
-            if r9_cells:
-                first = (r9_cells[0] if len(r9_cells) > 0 else "").strip().lower()
-                last_cell = r9_cells[-1] if len(r9_cells) > 0 else ""
-                if first == "bait":
-                    return last_cell
-
-        # 2) fallback por contenido BAIT
-        for row_html in rows:
-            cells = _td_texts(row_html)
-            if not cells:
-                continue
-            if (cells[0] or "").strip().lower() == "bait":
-                return cells[-1] if len(cells) > 0 else ""
-
-        return None
-    except Exception as e:
-        print(f"Regex fallback error: {e}")
-        return None
-
-def _extraer_bait_saldo_actual_en_target(target):
-    """
-    Devuelve el 'Saldo Actual' de BAIT:
-      - Primero intenta DOM (fila 9 -> último TD; si no, por contenido 'BAIT')
-      - Luego fallback HTML con la misma lógica
-      - Devuelve float o None
-    """
-    # 1) DOM
-    last_text = _poll_row9_lastcell_in_target(target, timeout_ms=20000, interval_ms=300)
-    if last_text:
-        val = _to_float(last_text)
-        if val is not None:
-            print(f"BAIT / Saldo Actual (DOM en frame): {val}")
-            return val
-
-    # 2) HTML
-    try:
-        html = target.content()
-    except Exception:
-        html = ""
-    if html:
-        last_text = _extract_row9_lastcell_from_html(html)
-        if last_text:
-            val = _to_float(last_text)
-            if val is not None:
-                print(f"BAIT / Saldo Actual (HTML en frame): {val}")
-                return val
+    # Dump de HTML opcional para diagnóstico
+    if DEBUG_DUMP_HTML:
+        try:
+            html = target.content()
+            fname = os.path.join(tempfile.gettempdir(), f"recargaqui_debug_{int(time.time())}.html")
+            with open(fname, "w", encoding="utf-8") as f:
+                f.write(html)
+            print(f"[DEBUG] HTML volcado en: {fname}")
+        except Exception as e:
+            print(f"[DEBUG] No se pudo volcar HTML: {e}")
 
     return None
 
 def obtener_saldo_recargaqui():
     """
-    Devuelve el 'Saldo Actual' de la FILA 9 (BAIT) en Recargaqui.
-    Recorre documento top y TODOS los frames, y toma SIEMPRE el último valor de esa fila.
+    Busca el 'Saldo Actual' de BAIT sin asumir fila fija ni clase de tabla.
+    Escanea página y todos los frames. Aumenta timeouts. Hace logout al final.
     """
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
@@ -467,6 +465,13 @@ def obtener_saldo_recargaqui():
                 try:
                     targets = _recargaqui_login_and_targets(page)
 
+                    # Debug útil
+                    try:
+                        print("URL principal:", page.url)
+                        print("Frames:", [(fr.name, fr.url) for fr in page.frames])
+                    except Exception:
+                        pass
+
                     saldo_bait_actual = None
                     for t in targets:
                         saldo_bait_actual = _extraer_bait_saldo_actual_en_target(t)
@@ -474,12 +479,11 @@ def obtener_saldo_recargaqui():
                             break
 
                     if saldo_bait_actual is None:
-                        print("No se encontró la fila 'BAIT' (fila 9) ni se pudo leer su 'Saldo Actual' (última columna) en ninguno de los frames.")
+                        print("No se pudo localizar la fila con 'BAIT' ni un saldo numérico en las tablas disponibles.")
 
                     return saldo_bait_actual
 
                 finally:
-                    # Logout y cierres dentro del with
                     try:
                         page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded", timeout=10000)
                         print("Sesión cerrada correctamente en Recargaqui.")
@@ -506,7 +510,7 @@ def obtener_saldo_recargaqui():
 # ===================== Orquestación =====================
 def ciclo_consulta():
     saldo_pagaqui = obtener_saldo_pagaqui()
-    saldo_bait_actual = obtener_saldo_recargaqui()  # <-- Saldo Actual de BAIT (última columna fila 9)
+    saldo_bait_actual = obtener_saldo_recargaqui()  # <-- Saldo Actual de BAIT (robusto)
     return saldo_pagaqui, saldo_bait_actual
 
 if __name__ == "__main__":
@@ -520,7 +524,7 @@ if __name__ == "__main__":
         if not falla_pagaqui and not falla_bait:
             print("\n--- Ambos valores consultados exitosamente ---")
             print(f"Saldo Pagaqui (Saldo Final): {saldo_pagaqui}")
-            print(f"BAIT / Saldo Actual (fila 9, última columna): {saldo_bait}")
+            print(f"BAIT / Saldo Actual: {saldo_bait}")
 
             criticos = []
             if saldo_pagaqui < CRITICO_PAGAQUI:
@@ -531,7 +535,7 @@ if __name__ == "__main__":
             if criticos:
                 mensaje = ("⚠️ *Saldo/valor bajo o crítico detectado:*\n"
                            + "\n".join(criticos)
-                           + "\n¡Revisa tu plataforma y recarga si es necesario!")
+                           + "\n¡Revisar plataforma y recargar si es necesario!")
                 enviar_whatsapp(mensaje)
             else:
                 print("Ningún valor crítico, no se envía WhatsApp.")
@@ -540,7 +544,7 @@ if __name__ == "__main__":
             if ciclo == CICLOS_REINTENTO:
                 msj = "⚠️ *Error de consulta:*"
                 if falla_pagaqui and falla_bait:
-                    msj += "\n- No se pudo obtener *Pagaqui (Saldo Final)* ni *Recargaqui/BAIT (Saldo Actual)* tras varios intentos. Revisa manualmente."
+                    msj += "\n- No se pudo obtener *Pagaqui (Saldo Final)* ni *Recargaqui/BAIT (Saldo Actual)* tras varios intentos. Revisión manual sugerida."
                 elif falla_pagaqui:
                     msj += "\n- No se pudo obtener *Pagaqui (Saldo Final)* tras varios intentos."
                     if saldo_bait is not None:
