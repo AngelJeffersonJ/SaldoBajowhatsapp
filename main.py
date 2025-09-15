@@ -396,7 +396,7 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=20000, interval_ms=300):
                 if fila_bait is None:
                     continue
 
-                // valor candidato
+                # valor candidato
                 let candidato = null;
                 if (col_idx !== null && col_idx < fila_bait.length) {
                     candidato = fila_bait[col_idx];
@@ -620,3 +620,4 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
