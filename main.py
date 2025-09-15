@@ -8,7 +8,7 @@ import re as _re_mod
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 from twilio.rest import Client
 
-# (opcional) cargar .env si se usa en local
+# (opcional) cargar .env si lo usas en local
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -36,7 +36,7 @@ CICLOS_REINTENTO = int(os.getenv("CICLOS_REINTENTO", "3"))
 CRITICO_PAGAQUI = float(os.getenv("CRITICO_PAGAQUI", "3000"))
 CRITICO_BAIT = float(os.getenv("CRITICO_BAIT", "1500"))
 
-# Debug opcional
+# Debug opcional (1 = volcar HTML de diagnóstico si falla la extracción)
 DEBUG_DUMP_HTML = os.getenv("DEBUG_DUMP_HTML", "0") == "1"
 
 # ===================== Utilidades de selectores =====================
@@ -144,10 +144,9 @@ def _norm(s: str) -> str:
 
 def _norm_laxo(s: str) -> str:
     """normalización más laxa (colapsa espacios)."""
-    s = _norm(s)
-    return " ".join(s.split())
+    return " ".join(_norm(s).split())
 
-# ===================== Pagaqui =====================
+# ===================== Pagaqui (sin cambios funcionales) =====================
 def _login_pagaqui(page):
     """Login robusto en Pagaqui (maneja forcelogout)."""
     page.goto("https://www.pagaqui.com.mx", wait_until="domcontentloaded")
@@ -279,19 +278,20 @@ def obtener_saldo_pagaqui():
         time.sleep(4)
     return None
 
-# ===================== Recargaqui (robusto, sin depender de 'fila 9') =====================
+# ===================== Recargaqui =====================
 def _recargaqui_login_and_targets(page):
     """
-    Hace login en Recargaqui y devuelve la lista de targets donde buscar la(s) tabla(s):
-    [page] + page.frames (frames ya poblados).
+    Login en Recargaqui y posicionamiento explícito en https://recargaquiws.com.mx/home.aspx.
+    Devuelve [page] + frames.
     """
     page.goto("https://recargaquiws.com.mx/login.aspx", wait_until="domcontentloaded")
-    tgt_user, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=15000)
-    _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=15000)
+    tgt_user, user_loc, _ = _find_in_page_or_frames(page, USERNAME_SELECTORS, timeout=20000)
+    _, pass_loc, _ = _find_in_page_or_frames(page, PASSWORD_SELECTORS, timeout=20000)
 
     _safe_type(user_loc, RECARGAQUI_USER)
     _safe_type(pass_loc, RECARGAQUI_PASS)
 
+    # forcelogout si aparece
     for sel in ["#forcelogout", "input[name='forcelogout']"]:
         try:
             fl = tgt_user.locator(sel)
@@ -301,6 +301,7 @@ def _recargaqui_login_and_targets(page):
         except Exception:
             pass
 
+    # Entrar
     btn = _first_present_locator(tgt_user, ["input#entrar", "button:has-text('Entrar')", "input[type='submit']"])
     if not btn:
         btn = _first_present_locator(page, ["input#entrar", "button:has-text('Entrar')", "input[type='submit']"])
@@ -308,20 +309,27 @@ def _recargaqui_login_and_targets(page):
         raise RuntimeError("No se encontró el botón de 'Entrar' en Recargaqui.")
     btn.click()
 
+    # Esperar home y forzar home.aspx por si acaso
     try:
-        page.wait_for_url(_re_mod.compile(r"/home\.aspx$", _re_mod.I), timeout=15000)
+        page.wait_for_url(_re_mod.compile(r"/home\.aspx$", _re_mod.I), timeout=20000)
     except PlaywrightTimeout:
         try:
             page.goto("https://recargaquiws.com.mx/home.aspx", wait_until="domcontentloaded")
         except Exception:
             pass
 
-    # Intentar posicionarse en inicio/home
+    # Click explícito a INICIO por texto (como en la UI de tu captura)
     try:
-        mi = page.locator("#ctl00_mInicio, a[href='home.aspx']")
-        if mi.count() > 0:
-            mi.first.click()
+        ini = page.locator("a:has-text('INICIO')")
+        if ini.count() > 0:
+            ini.first.click()
             page.wait_for_load_state("domcontentloaded")
+    except Exception:
+        pass
+
+    # Esperar a que exista al menos una tabla
+    try:
+        page.wait_for_selector("table", state="attached", timeout=20000)
     except Exception:
         pass
 
@@ -329,96 +337,99 @@ def _recargaqui_login_and_targets(page):
 
 def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=400):
     """
-    Escanea TODAS las tablas del 'target' (page o frame) sin asumir clase ni fila fija:
-      1) Identifica una fila que contenga 'BAIT' (match laxo).
-      2) Intenta resolver columna por encabezado ('saldo actual', 'saldo', etc.).
-      3) Si no hay encabezado claro, usa la última celda numérica de la fila.
+    Escanea tablas del 'target' priorizando .mGrid:
+      1) Encuentra fila cuyo primer TD sea exactamente 'BAIT' (normalizado) para no confundir con BAT.
+      2) Detecta la columna 'Saldo Actual'; si no existe, usa la última celda numérica.
     Devuelve float o None.
     """
     deadline = time.time() + timeout_ms / 1000.0
     last_err = None
-    col_candidatas = ["saldo actual", "saldo", "saldo act", "saldo_actual"]
+    saldo_header_keys = ["saldo actual", "saldo_actual", "saldo  actual"]
+
+    def _is_bait_first_cell(row):
+        if not row:
+            return False
+        first = _norm_laxo(row[0])
+        return first == "bait"
 
     while time.time() < deadline:
         try:
             tablas = target.evaluate("""
                 () => {
-                  const grabText = el => (el?.innerText ?? "").trim();
-                  const list = Array.from(document.querySelectorAll("table"));
-                  return list.map(tbl => {
-                    // headers
+                  const grab = el => (el?.innerText ?? "").trim();
+                  const pick = sel => Array.from(document.querySelectorAll(sel));
+                  // Prioriza .mGrid; si no hay, toma todas
+                  let t = pick("table.mGrid");
+                  if (t.length === 0) t = pick("table");
+                  return t.map(tbl => {
+                    // Headers
                     let headers = [];
-                    const theadRow = tbl.querySelector("thead tr");
-                    if (theadRow) {
-                      headers = Array.from(theadRow.querySelectorAll("th,td")).map(grabText);
+                    const thead = tbl.querySelector("thead tr");
+                    if (thead) {
+                      headers = Array.from(thead.querySelectorAll("th,td")).map(grab);
                     } else {
                       const firstRow = tbl.querySelector("tr");
-                      if (firstRow) {
-                        headers = Array.from(firstRow.querySelectorAll("th,td")).map(grabText);
-                      }
+                      if (firstRow) headers = Array.from(firstRow.querySelectorAll("th,td")).map(grab);
                     }
-                    // body rows
+                    // Body
                     let bodyRows = Array.from(tbl.querySelectorAll("tbody tr"));
                     if (bodyRows.length === 0) {
                       const trs = Array.from(tbl.querySelectorAll("tr"));
                       bodyRows = trs.filter(tr => tr.querySelectorAll("td").length > 0);
-                      // si usamos la primera fila como headers, quítala del body
-                      const hasHeaderRow = !theadRow && !!tbl.querySelector("tr th");
-                      if (hasHeaderRow && bodyRows.length > 0) {
-                        bodyRows = bodyRows.slice(1);
-                      }
+                      // si usamos la primera fila como headers (hay TH en la primera), quítala del body
+                      const usedFirstAsHeader = !thead && !!tbl.querySelector("tr th");
+                      if (usedFirstAsHeader && bodyRows.length > 0) bodyRows = bodyRows.slice(1);
                     }
-                    const rows = bodyRows.map(tr => Array.from(tr.querySelectorAll("td")).map(grabText));
-                    return { headers, rows };
+                    const rows = bodyRows.map(tr => Array.from(tr.querySelectorAll("td")).map(grab));
+                    return { headers, rows, isMGrid: tbl.classList.contains("mGrid") };
                   });
                 }
             """)
 
+            # Recorre primero las .mGrid
+            tablas.sort(key=lambda x: (not x.get("isMGrid", False)))
+
             for tbl in tablas:
                 headers = tbl.get("headers") or []
-                headers_norm = [_norm_laxo(h) for h in headers]
                 rows = tbl.get("rows") or []
                 if not rows:
                     continue
 
-                # Determinar índice de columna por encabezado
+                headers_norm = [_norm_laxo(h) for h in headers]
+
+                # Ubica columna por encabezado
                 col_idx = None
-                for cand in col_candidatas:
-                    for i, h in enumerate(headers_norm):
-                        if cand in h:
-                            col_idx = i
-                            break
-                    if col_idx is not None:
+                for i, h in enumerate(headers_norm):
+                    if any(key in h for key in saldo_header_keys):
+                        col_idx = i
                         break
 
-                # Buscar fila BAIT (prioriza primeras columnas; si no, cualquier celda)
+                # Busca fila BAIT por igualdad estricta en la primera celda
                 fila_bait = None
                 for r in rows:
-                    if not r:
-                        continue
-                    primeros = r[:2] if len(r) >= 2 else r
-                    if any("bait" in _norm_laxo(x) for x in primeros):
+                    if _is_bait_first_cell(r):
                         fila_bait = r
                         break
+                # Fallback: en cualquier celda (menos preferido)
                 if fila_bait is None:
                     for r in rows:
-                        if any("bait" in _norm_laxo(x) for x in r):
+                        if any(_norm_laxo(c) == "bait" for c in r):
                             fila_bait = r
                             break
                 if fila_bait is None:
-                    continue  # en esta tabla no está BAIT
+                    continue
 
-                # Elegir celda candidata
+                # Toma celda candidata
                 if col_idx is not None and col_idx < len(fila_bait):
                     candidato = fila_bait[col_idx]
                 else:
-                    # última celda numérica; si no hay, última celda
+                    # última celda numérica de la fila; si no hay, última celda
                     nums = [c for c in fila_bait if _to_float(c) is not None]
                     candidato = nums[-1] if nums else (fila_bait[-1] if fila_bait else "")
 
                 val = _to_float(candidato)
                 if val is not None:
-                    print(f"BAIT / Saldo detectado: {val}")
+                    print(f"BAIT / Saldo Actual detectado: {val}")
                     return val
 
         except Exception as e:
@@ -444,8 +455,8 @@ def _extraer_bait_saldo_actual_en_target(target, timeout_ms=45000, interval_ms=4
 
 def obtener_saldo_recargaqui():
     """
-    Busca el 'Saldo Actual' de BAIT sin asumir fila fija ni clase de tabla.
-    Escanea página y todos los frames. Aumenta timeouts. Hace logout al final.
+    Busca el 'Saldo Actual' de BAIT en https://recargaquiws.com.mx/home.aspx sin asumir 'fila 9'.
+    Escanea página y todos los frames. Hace logout al final.
     """
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
@@ -479,7 +490,7 @@ def obtener_saldo_recargaqui():
                             break
 
                     if saldo_bait_actual is None:
-                        print("No se pudo localizar la fila con 'BAIT' ni un saldo numérico en las tablas disponibles.")
+                        print("No se pudo localizar 'BAIT' ni un 'Saldo Actual' numérico en las tablas disponibles.")
 
                     return saldo_bait_actual
 
@@ -535,7 +546,7 @@ if __name__ == "__main__":
             if criticos:
                 mensaje = ("⚠️ *Saldo/valor bajo o crítico detectado:*\n"
                            + "\n".join(criticos)
-                           + "\n¡Revisar plataforma y recargar si es necesario!")
+                           + "\n¡Revisa tu plataforma y recarga si es necesario!")
                 enviar_whatsapp(mensaje)
             else:
                 print("Ningún valor crítico, no se envía WhatsApp.")
@@ -544,7 +555,7 @@ if __name__ == "__main__":
             if ciclo == CICLOS_REINTENTO:
                 msj = "⚠️ *Error de consulta:*"
                 if falla_pagaqui and falla_bait:
-                    msj += "\n- No se pudo obtener *Pagaqui (Saldo Final)* ni *Recargaqui/BAIT (Saldo Actual)* tras varios intentos. Revisión manual sugerida."
+                    msj += "\n- No se pudo obtener *Pagaqui (Saldo Final)* ni *Recargaqui/BAIT (Saldo Actual)* tras varios intentos. Revisa manualmente."
                 elif falla_pagaqui:
                     msj += "\n- No se pudo obtener *Pagaqui (Saldo Final)* tras varios intentos."
                     if saldo_bait is not None:
