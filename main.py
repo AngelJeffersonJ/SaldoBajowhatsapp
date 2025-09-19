@@ -322,50 +322,51 @@ def _recargaqui_login_and_targets(page):
 
 # ======== SOLO CAMBIÓ LA LÓGICA DEL DBGRID A PARTIR DE AQUÍ ========
 
-def _poll_row9_lastcell_in_target(target, timeout_ms=30000, interval_ms=300):
+def _poll_row9_lastcell_in_target(target, timeout_ms=90000, interval_ms=400):
     """
-    Lee SIEMPRE el 9º <tr> del <tbody> (contando solo filas con <td>)
-    y devuelve el texto del 6º <td> de esa fila (Saldo Actual).
+    DOM: espera a que el <tbody> tenga >= 9 filas (con <td>) y
+    devuelve el texto del 6º <td> del 9º <tr>.
     """
     deadline = time.time() + timeout_ms / 1000.0
     last_err = None
-    ROW_IDX = 9   # 1-based
-    COL_IDX = 6   # 1-based
 
     while time.time() < deadline:
         try:
-            # Espera a que exista alguna tabla
             try:
                 target.wait_for_selector("table.mGrid, table", timeout=1500)
             except Exception:
                 pass
 
-            # Extrae directamente la celda objetivo en el DOM
             res = target.evaluate("""
                 () => {
-                    const pick = sel => Array.from(document.querySelectorAll(sel));
+                    const pick = (sel) => Array.from(document.querySelectorAll(sel));
+                    // preferimos .mGrid
                     let tables = pick("table.mGrid");
                     if (tables.length === 0) tables = pick("table");
 
+                    // ordena: primero .mGrid
+                    tables.sort((a,b) => (b.classList.contains('mGrid') - a.classList.contains('mGrid')));
+
                     for (const tbl of tables) {
-                        // Filas reales del cuerpo (con <td>)
-                        let bodyRows = Array.from(tbl.querySelectorAll("tbody tr"))
-                            .filter(tr => tr.querySelectorAll("td").length > 0);
-                        if (bodyRows.length >= 9) {
-                            const row = bodyRows[8]; // 9º -> índice 8
-                            const tds = Array.from(row.querySelectorAll("td"));
-                            if (tds.length >= 6) {
-                                const txt = (tds[5].innerText || "").trim();
-                                return { text: txt };
-                            }
-                        }
+                        const tb = (tbl.tBodies && tbl.tBodies.length) ? tbl.tBodies[0] : null;
+                        if (!tb) continue;
+
+                        const rows = Array.from(tb.querySelectorAll("tr"))
+                                          .filter(tr => tr.querySelectorAll("td").length > 0);
+                        if (rows.length < 9) continue;
+
+                        const tds = Array.from(rows[8].querySelectorAll("td")); // 9º tr -> idx 8
+                        if (tds.length < 6) continue;
+
+                        const txt = (tds[5].innerText || "").trim();            // 6º td -> idx 5
+                        if (txt !== "") return { text: txt };
                     }
                     return null;
                 }
             """)
 
-            if res and isinstance(res, dict) and res.get("text"):
-                # Normaliza a float si se puede
+            if res and isinstance(res, dict) and res.get("text", "") != "":
+                # normaliza a número si aplica
                 val = _to_float(res["text"])
                 return {"text": str(val) if val is not None else res["text"]}
 
@@ -381,11 +382,10 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=30000, interval_ms=300):
 
 def _extract_row9_lastcell_from_html(html: str):
     """
-    Fallback por HTML: busca la primera .mGrid (o la primera <table>),
-    toma el 9º <tr> del <tbody> (solo con <td>) y devuelve el texto del 6º <td>.
+    HTML fallback: toma la primera .mGrid (o primera <table>), busca el <tbody>,
+    usa el 9º <tr> que tenga <td> y devuelve el texto del 6º <td>.
     """
     try:
-        # 1) tabla .mGrid o, si no hay, la primera <table>
         m = re.search(r"<table[^>]*class=[\"'][^\"']*mGrid[^\"']*[\"'][^>]*>.*?</table>", html, re.S | re.I)
         if not m:
             m = re.search(r"<table[^>]*>.*?</table>", html, re.S | re.I)
@@ -393,67 +393,24 @@ def _extract_row9_lastcell_from_html(html: str):
             return None
         table_html = m.group(0)
 
-        # 2) obtener solo filas de <tbody> que tengan <td>
         tbody = re.search(r"<tbody[^>]*>(.*?)</tbody>", table_html, re.S | re.I)
         rows_html = tbody.group(1) if tbody else table_html
-        row_blocks = re.findall(r"<tr[^>]*>(.*?)</tr>", rows_html, re.S | re.I)
 
+        # solo filas que realmente tienen <td>
+        row_blocks = re.findall(r"<tr[^>]*>(.*?)</tr>", rows_html, re.S | re.I)
         body_rows = []
         for row_html in row_blocks:
             tds = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.S | re.I)
-            if tds:  # solo filas con td
+            if tds:
+                # limpia HTML interno
                 body_rows.append([re.sub(r"<[^>]+>", "", td).strip() for td in tds])
 
-        if len(body_rows) < 9:
+        if len(body_rows) < 9 or len(body_rows[8]) < 6:
             return None
 
-        row = body_rows[8]  # 9º -> índice 8
-        if len(row) < 6:
-            return None
-
-        cell_text = row[5]  # 6º td
+        cell_text = body_rows[8][5]  # 9º tr, 6º td
         val = _to_float(cell_text)
         return str(val) if val is not None else cell_text
-
-    except Exception as e:
-        print(f"Regex fallback error: {e}")
-        return None
-
-def _extract_row9_lastcell_from_html(html: str):
-    """
-    Fallback por HTML: toma la primera .mGrid (o la primera <table>),
-    selecciona SIEMPRE la fila 9 (solo filas con <td>) y devuelve la última celda numérica.
-    """
-    try:
-        m = re.search(r"<table[^>]*class=[\"'][^\"']*mGrid[^\"']*[\"'][^>]*>.*?</table>", html, re.S | re.I)
-        if not m:
-            m = re.search(r"<table[^>]*>.*?</table>", html, re.S | re.I)
-        if not m:
-            return None
-        table_html = m.group(0)
-
-        # filas que tienen <td>
-        rows_html = re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, re.S | re.I)
-        body_rows = []
-        for row_html in rows_html:
-            tds = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.S | re.I)
-            if tds:
-                body_rows.append([re.sub(r"<[^>]+>", "", td).strip() for td in tds])
-
-        i = 8  # fila 9 -> índice 8
-        if i < 0 or i >= len(body_rows):
-            return None
-
-        row = body_rows[i]
-        if not row:
-            return None
-
-        # última celda numérica de esa fila
-        for cell in reversed(row):
-            val = _to_float(cell)
-            if val is not None:
-                return str(val)
-        return row[-1] if row else None
 
     except Exception as e:
         print(f"Regex fallback error: {e}")
@@ -601,5 +558,6 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
 
 
