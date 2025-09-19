@@ -322,10 +322,10 @@ def _recargaqui_login_and_targets(page):
 
 # ======== SOLO CAMBIÓ LA LÓGICA DEL DBGRID A PARTIR DE AQUÍ ========
 
-def _poll_row9_lastcell_in_target(target, timeout_ms=90000, interval_ms=400):
+def _poll_bait_row_lastcell_in_target(target, timeout_ms=90000, interval_ms=400):
     """
-    DOM: espera a que el <tbody> tenga >= 9 filas (con <td>) y
-    devuelve el texto del 6º <td> del 9º <tr>.
+    DOM: busca la fila que contiene "BAIT" en cualquier <td> y
+    devuelve el texto de la última celda numérica de esa fila.
     """
     deadline = time.time() + timeout_ms / 1000.0
     last_err = None
@@ -353,13 +353,22 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=90000, interval_ms=400):
 
                         const rows = Array.from(tb.querySelectorAll("tr"))
                                           .filter(tr => tr.querySelectorAll("td").length > 0);
-                        if (rows.length < 9) continue;
-
-                        const tds = Array.from(rows[8].querySelectorAll("td")); // 9º tr -> idx 8
-                        if (tds.length < 6) continue;
-
-                        const txt = (tds[5].innerText || "").trim();            // 6º td -> idx 5
-                        if (txt !== "") return { text: txt };
+                        
+                        // Buscar la fila que contiene "BAIT"
+                        for (const row of rows) {
+                            const tds = Array.from(row.querySelectorAll("td"));
+                            const hasBait = tds.some(td => (td.innerText || "").trim().toUpperCase() === "BAIT");
+                            
+                            if (hasBait && tds.length > 0) {
+                                // Buscar la última celda con contenido numérico
+                                for (let i = tds.length - 1; i >= 0; i--) {
+                                    const txt = (tds[i].innerText || "").trim();
+                                    if (txt !== "" && /[\d$]/.test(txt)) {
+                                        return { text: txt };
+                                    }
+                                }
+                            }
+                        }
                     }
                     return null;
                 }
@@ -376,14 +385,14 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=90000, interval_ms=400):
         time.sleep(interval_ms / 1000.0)
 
     if last_err:
-        print(f"[poll grid] último error silencioso: {last_err}")
+        print(f"[poll bait row] último error silencioso: {last_err}")
     return None
 
 
-def _extract_row9_lastcell_from_html(html: str):
+def _extract_bait_row_lastcell_from_html(html: str):
     """
-    HTML fallback: toma la primera .mGrid (o primera <table>), busca el <tbody>,
-    usa el 9º <tr> que tenga <td> y devuelve el texto del 6º <td>.
+    HTML fallback: busca la fila que contiene "BAIT" y devuelve
+    el texto de la última celda numérica de esa fila.
     """
     try:
         m = re.search(r"<table[^>]*class=[\"'][^\"']*mGrid[^\"']*[\"'][^>]*>.*?</table>", html, re.S | re.I)
@@ -405,12 +414,17 @@ def _extract_row9_lastcell_from_html(html: str):
                 # limpia HTML interno
                 body_rows.append([re.sub(r"<[^>]+>", "", td).strip() for td in tds])
 
-        if len(body_rows) < 9 or len(body_rows[8]) < 6:
-            return None
+        # Buscar la fila que contiene "BAIT"
+        for row in body_rows:
+            if any(cell.upper() == "BAIT" for cell in row):
+                # Buscar la última celda con contenido numérico
+                for i in range(len(row) - 1, -1, -1):
+                    cell_text = row[i]
+                    if cell_text and re.search(r'[\d$]', cell_text):
+                        val = _to_float(cell_text)
+                        return str(val) if val is not None else cell_text
 
-        cell_text = body_rows[8][5]  # 9º tr, 6º td
-        val = _to_float(cell_text)
-        return str(val) if val is not None else cell_text
+        return None
 
     except Exception as e:
         print(f"Regex fallback error: {e}")
@@ -419,12 +433,12 @@ def _extract_row9_lastcell_from_html(html: str):
 def _extraer_bait_saldo_actual_en_target(target):
     """
     Devuelve el 'Saldo Actual' de BAIT usando:
-      - Primero DOM (fila 9 y última celda numérica)
+      - Primero DOM (busca fila con "BAIT" y última celda numérica)
       - Luego fallback HTML con la misma lógica.
       - Devuelve float o None
     """
     # 1) DOM
-    res = _poll_row9_lastcell_in_target(target, timeout_ms=30000, interval_ms=300)
+    res = _poll_bait_row_lastcell_in_target(target, timeout_ms=30000, interval_ms=300)
     if res and isinstance(res, dict):
         val = _to_float(res.get("text"))
         if val is not None:
@@ -437,7 +451,7 @@ def _extraer_bait_saldo_actual_en_target(target):
     except Exception:
         html = ""
     if html:
-        last_text = _extract_row9_lastcell_from_html(html)
+        last_text = _extract_bait_row_lastcell_from_html(html)
         if last_text:
             val = _to_float(last_text)
             if val is not None:
@@ -450,8 +464,9 @@ def _extraer_bait_saldo_actual_en_target(target):
 
 def obtener_saldo_recargaqui():
     """
-    Devuelve el 'Saldo Actual' de la FILA 9 (BAIT) en Recargaqui.
-    Recorre documento top y TODOS los frames, y toma SIEMPRE el último valor de esa fila.
+    Devuelve el 'Saldo Actual' de BAIT en Recargaqui.
+    Busca la fila que contiene "BAIT" y devuelve la última cantidad numérica de esa fila.
+    Recorre documento top y TODOS los frames.
     """
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
@@ -478,7 +493,7 @@ def obtener_saldo_recargaqui():
                             break
 
                     if saldo_bait_actual is None:
-                        print("No se encontró la fila 'BAIT' (fila 9) ni se pudo leer su 'Saldo Actual' (última columna) en ninguno de los frames.")
+                        print("No se encontró la fila 'BAIT' ni se pudo leer su 'Saldo Actual' (última celda numérica) en ninguno de los frames.")
 
                     return saldo_bait_actual
 
@@ -510,7 +525,7 @@ def obtener_saldo_recargaqui():
 # ===================== Orquestación =====================
 def ciclo_consulta():
     saldo_pagaqui = obtener_saldo_pagaqui()
-    saldo_bait_actual = obtener_saldo_recargaqui()  # <-- Saldo Actual de BAIT (última columna fila 9)
+    saldo_bait_actual = obtener_saldo_recargaqui()  # <-- Saldo Actual de BAIT (última celda numérica de la fila que contiene "BAIT")
     return saldo_pagaqui, saldo_bait_actual
 
 if __name__ == "__main__":
@@ -524,7 +539,7 @@ if __name__ == "__main__":
         if not falla_pagaqui and not falla_bait:
             print("\n--- Ambos valores consultados exitosamente ---")
             print(f"Saldo Pagaqui (Saldo Final): {saldo_pagaqui}")
-            print(f"BAIT / Saldo Actual (fila 9, última columna): {saldo_bait}")
+            print(f"BAIT / Saldo Actual (fila con 'BAIT', última celda numérica): {saldo_bait}")
 
             criticos = []
             if saldo_pagaqui < CRITICO_PAGAQUI:
