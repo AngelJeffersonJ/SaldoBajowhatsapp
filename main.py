@@ -321,11 +321,10 @@ def _recargaqui_login_and_targets(page):
     return [page] + list(page.frames)
 
 # ======== SOLO CAMBIÓ LA LÓGICA DEL DBGRID A PARTIR DE AQUÍ ========
-def _poll_row9_lastcell_in_target(target, timeout_ms=90000, interval_ms=400):
+def _poll_bait_lastcell_in_target(target, timeout_ms=90000, interval_ms=400):
     """
-    DOM: Busca el <tr> cuyo primer <td> sea exactamente 'BAIT'
-    y devuelve el texto del ÚLTIMO <td> numérico de esa fila
-    (si no hay numéricos, devuelve el último <td> tal cual).
+    DOM: busca el <tr> cuyo primer <td> sea exactamente 'BAIT'
+    y devuelve el texto del ÚLTIMO <td> de esa fila (Saldo Actual).
     """
     deadline = time.time() + timeout_ms / 1000.0
     last_err = None
@@ -355,9 +354,12 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=90000, interval_ms=400):
 
                         for (const tr of rows) {
                             const tds = Array.from(tr.querySelectorAll("td"));
-                            const texts = tds.map(grab);
-                            if (texts.length > 0 && texts[0] == "BAIT") {
-                                return { cells: texts };  // devolvemos TODA la fila BAIT
+                            if (tds.length === 0) continue;
+
+                            // ¿primer td es "BAIT"?
+                            if (grab(tds[0]) === "BAIT") {
+                                const last = grab(tds[tds.length - 1]);  // último td = Saldo Actual
+                                return { text: last };
                             }
                         }
                     }
@@ -365,15 +367,8 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=90000, interval_ms=400):
                 }
             """)
 
-            if res and isinstance(res, dict) and res.get("cells"):
-                cells = res["cells"]
-                # último <td> NUMÉRICO, de derecha a izquierda
-                for cell in reversed(cells):
-                    val = _to_float(cell)
-                    if val is not None:
-                        return {"text": str(val)}
-                # si no hay ninguno numérico, último td tal cual
-                return {"text": cells[-1]}
+            if res and isinstance(res, dict) and res.get("text"):
+                return {"text": res["text"]}
 
         except Exception as e:
             last_err = e
@@ -381,15 +376,14 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=90000, interval_ms=400):
         time.sleep(interval_ms / 1000.0)
 
     if last_err:
-        print(f"[poll grid] último error silencioso: {last_err}")
+        print(f"[poll bait] último error silencioso: {last_err}")
     return None
 
 
-def _extract_row9_lastcell_from_html(html: str):
+def _extract_bait_lastcell_from_html(html: str):
     """
-    HTML fallback: en la primera .mGrid (o <table>), busca el <tr>
-    cuyo primer <td> sea 'BAIT' y devuelve el ÚLTIMO <td> numérico
-    (o el último <td> si no hay numéricos).
+    HTML fallback: busca la fila cuyo primer <td> sea 'BAIT'
+    y devuelve el contenido del ÚLTIMO <td> (Saldo Actual).
     """
     try:
         m = re.search(r"<table[^>]*class=[\"'][^\"']*mGrid[^\"']*[\"'][^>]*>.*?</table>", html, re.S | re.I)
@@ -402,18 +396,12 @@ def _extract_row9_lastcell_from_html(html: str):
         tbody = re.search(r"<tbody[^>]*>(.*?)</tbody>", table_html, re.S | re.I)
         rows_html = tbody.group(1) if tbody else table_html
 
-        # recorrer filas con <td>
         for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", rows_html, re.S | re.I):
             tds = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.S | re.I)
             if not tds:
                 continue
             cells = [re.sub(r"<[^>]+>", "", td).strip() for td in tds]
             if cells and cells[0] == "BAIT":
-                # último td numérico
-                for cell in reversed(cells):
-                    val = _to_float(cell)
-                    if val is not None:
-                        return str(val)
                 return cells[-1] if cells else None
 
         return None
@@ -425,26 +413,24 @@ def _extract_row9_lastcell_from_html(html: str):
 
 def _extraer_bait_saldo_actual_en_target(target):
     """
-    Devuelve el 'Saldo Actual' de la fila BAIT:
-      - Primero DOM (fila cuyo 1er <td> == 'BAIT', último <td> numérico)
-      - Luego fallback HTML con la misma lógica.
-      - Devuelve float o None.
+    Devuelve el 'Saldo Actual' de la fila BAIT.
+    Devuelve float o None.
     """
-    # 1) DOM
-    res = _poll_row9_lastcell_in_target(target, timeout_ms=30000, interval_ms=300)
+    # 1) Intento con DOM
+    res = _poll_bait_lastcell_in_target(target, timeout_ms=30000, interval_ms=300)
     if res and isinstance(res, dict):
         val = _to_float(res.get("text"))
         if val is not None:
             print(f"BAIT / Saldo Actual (DOM en frame): {val}")
             return val
 
-    # 2) HTML
+    # 2) Fallback con HTML
     try:
         html = target.content()
     except Exception:
         html = ""
     if html:
-        last_text = _extract_row9_lastcell_from_html(html)
+        last_text = _extract_bait_lastcell_from_html(html)
         if last_text:
             val = _to_float(last_text)
             if val is not None:
@@ -458,7 +444,7 @@ def _extraer_bait_saldo_actual_en_target(target):
 def obtener_saldo_recargaqui():
     """
     Devuelve el 'Saldo Actual' de BAIT en Recargaqui.
-    Recorre documento top y TODOS los frames, y toma el último valor numérico de esa fila.
+    Recorre documento top y TODOS los frames.
     """
     for intento in range(1, SALDO_INTENTOS + 1):
         print(f"Intento de consulta de saldo Recargaqui: {intento}")
@@ -490,7 +476,6 @@ def obtener_saldo_recargaqui():
                     return saldo_bait_actual
 
                 finally:
-                    # Logout y cierres dentro del with
                     try:
                         page.goto("https://recargaquiws.com.mx/logout.aspx", wait_until="domcontentloaded", timeout=10000)
                         print("Sesión cerrada correctamente en Recargaqui.")
