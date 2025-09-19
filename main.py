@@ -324,15 +324,15 @@ def _recargaqui_login_and_targets(page):
 
 def _poll_row9_lastcell_in_target(target, timeout_ms=30000, interval_ms=300):
     """
-    Lee tablas (prioriza .mGrid) y devuelve {"text": "<valor>"} con:
-      - Columna 'Saldo Actual' de la fila cuyo primer TD sea 'BAIT'
-      - Si no hay encabezado claro, toma la última celda numérica de esa fila
+    Usa SIEMPRE la fila 9 (1-based, contando solo filas con <td>) de la primera tabla válida
+    (prioriza .mGrid) y devuelve la ÚLTIMA celda numérica de esa fila (Saldo Actual).
     """
     deadline = time.time() + timeout_ms / 1000.0
     last_err = None
+    row_one_based = 9  # <-- fila fija solicitada
+
     while time.time() < deadline:
         try:
-            # intentar esperar a que aparezca la tabla
             try:
                 target.wait_for_selector("table.mGrid, table", timeout=1500)
             except Exception:
@@ -341,92 +341,60 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=30000, interval_ms=300):
             data = target.evaluate("""
                 () => {
                     const grab = el => (el?.innerText ?? "").trim();
-                    const pick = sel => Array.from(document.querySelectorAll(sel));
+                    const qall = sel => Array.from(document.querySelectorAll(sel));
 
-                    let tables = pick("table.mGrid");
-                    if (tables.length === 0) tables = pick("table");
+                    let tables = qall("table.mGrid");
+                    if (tables.length === 0) tables = qall("table");
 
-                    return tables.map(tbl => {
-                        // headers
-                        let headers = [];
-                        const theadRow = tbl.querySelector("thead tr");
-                        if (theadRow) {
-                            headers = Array.from(theadRow.querySelectorAll("th,td")).map(grab);
-                        } else {
-                            const firstRow = tbl.querySelector("tr");
-                            if (firstRow) headers = Array.from(firstRow.querySelectorAll("th,td")).map(grab);
-                        }
-
-                        // body rows
+                    const tablesData = tables.map(tbl => {
+                        // filas del cuerpo que realmente tienen <td>
                         let bodyRows = Array.from(tbl.querySelectorAll("tbody tr"));
                         if (bodyRows.length === 0) {
                             const trs = Array.from(tbl.querySelectorAll("tr"));
                             bodyRows = trs.filter(tr => tr.querySelectorAll("td").length > 0);
-                            // si el primer tr fue encabezado, elimínalo de body
-                            if (!theadRow && tbl.querySelector("tr th") && bodyRows.length > 0) {
-                                bodyRows = bodyRows.slice(1);
-                            }
                         }
-
                         const rows = bodyRows.map(tr =>
-                            Array.from(tr.querySelectorAll("td")).map(grab)
+                            Array.from(tr.querySelectorAll("td")).map(td => grab(td))
                         );
-
                         return {
                             isMGrid: tbl.classList.contains("mGrid"),
-                            headers,
                             rows
                         };
                     });
+
+                    // prioriza .mGrid
+                    tablesData.sort((a,b) => (a.isMGrid?0:1) - (b.isMGrid?0:1));
+                    return tablesData;
                 }
             """)
-
-            # prioriza .mGrid
-            data.sort(key=lambda x: 0 if (x or {}).get("isMGrid") else 1)
 
             for tbl in data or []:
                 rows = (tbl or {}).get("rows") or []
                 if not rows:
                     continue
 
-                headers = (tbl or {}).get("headers") or []
-                headers_norm = [_norm_laxo(h) for h in headers]
-                col_idx = None
-                for i, h in enumerate(headers_norm):
-                    if "saldo" in h and "actual" in h:
-                        col_idx = i
-                        break
-
-                # fila BAIT (primer TD)
-                fila_bait = None
-                for r in rows:
-                    if r and _norm_laxo(r[0]) == "bait":
-                        fila_bait = r
-                        break
-                if fila_bait is None:
-                    # fallback: BAIT en cualquier celda
-                    for r in rows:
-                        if any(_norm_laxo(c) == "bait" for c in r):
-                            fila_bait = r
-                            break
-                if fila_bait is None:
+                i = row_one_based - 1  # 0-based
+                if i < 0 or i >= len(rows):
                     continue
 
-                # valor candidato
-                candidato = None
-                if col_idx is not None and col_idx < len(fila_bait):
-                    candidato = fila_bait[col_idx]
-                else:
-                    # última celda numérica de la fila
-                    for cell in reversed(fila_bait):
-                        if _to_float(cell) is not None:
-                            candidato = cell
-                            break
-                    if candidato is None and fila_bait:
-                        candidato = fila_bait[-1]
+                row = rows[i]
+                if not row:
+                    continue
 
-                if candidato:
-                    return {"text": candidato}
+                # tomar la última celda numérica de la fila
+                const_num = (txt) => {
+                    const m = (txt || '').replace('\\xa0',' ').replace('$',' ').match(/[-+]?\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?|[-+]?\\d+(?:\\.\\d+)?/);
+                    return m ? m[0] : null;
+                };
+
+                for (let k = row.length - 1; k >= 0; k--) {
+                    const cand = const_num(row[k]);
+                    if (cand) return { text: cand };
+                }
+
+                // si ninguna celda tiene número, devuelve la última tal cual
+                return { text: row[row.length - 1] };
+            }
 
         except Exception as e:
             last_err = e
@@ -439,11 +407,10 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=30000, interval_ms=300):
 
 def _extract_row9_lastcell_from_html(html: str):
     """
-    Fallback por HTML: busca la primera .mGrid (o la primera <table>),
-    detecta columna 'Saldo Actual' y fila 'BAIT' y devuelve el texto.
+    Fallback por HTML: toma la primera .mGrid (o la primera <table>),
+    selecciona SIEMPRE la fila 9 (solo filas con <td>) y devuelve la última celda numérica.
     """
     try:
-        # 1) tabla .mGrid o, si no hay, la primera <table>
         m = re.search(r"<table[^>]*class=[\"'][^\"']*mGrid[^\"']*[\"'][^>]*>.*?</table>", html, re.S | re.I)
         if not m:
             m = re.search(r"<table[^>]*>.*?</table>", html, re.S | re.I)
@@ -451,47 +418,29 @@ def _extract_row9_lastcell_from_html(html: str):
             return None
         table_html = m.group(0)
 
-        # 2) encabezados
-        thead = re.search(r"<thead[^>]*>(.*?)</thead>", table_html, re.S | re.I)
-        if thead:
-            header_row = re.search(r"<tr[^>]*>(.*?)</tr>", thead.group(1), re.S | re.I)
-            headers_html = header_row.group(1) if header_row else ""
-        else:
-            first_tr = re.search(r"<tr[^>]*>(.*?)</tr>", table_html, re.S | re.I)
-            headers_html = first_tr.group(1) if first_tr else ""
-
-        headers = [re.sub(r"<[^>]+>", "", h).strip()
-                   for h in re.findall(r"<t[hd][^>]*>(.*?)</t[hd]>", headers_html, re.S | re.I)]
-        headers_norm = [_norm_laxo(h) for h in headers]
-        col_idx = None
-        for i, h in enumerate(headers_norm):
-            if "saldo" in h and "actual" in h:
-                col_idx = i
-                break
-
-        # 3) filas del cuerpo
-        tbody = re.search(r"<tbody[^>]*>(.*?)</tbody>", table_html, re.S | re.I)
-        rows_html = tbody.group(1) if tbody else table_html
-        rows = re.findall(r"<tr[^>]*>(.*?)</tr>", rows_html, re.S | re.I)
-
-        def _cells(row_html):
+        # filas que tienen <td>
+        rows_html = re.findall(r"<tr[^>]*>(.*?)</tr>", table_html, re.S | re.I)
+        body_rows = []
+        for row_html in rows_html:
             tds = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.S | re.I)
-            return [re.sub(r"<[^>]+>", "", td).strip() for td in tds]
+            if tds:
+                body_rows.append([re.sub(r"<[^>]+>", "", td).strip() for td in tds])
 
-        for row_html in rows:
-            cells = _cells(row_html)
-            if not cells:
-                continue
-            if _norm_laxo(cells[0]) == "bait" or any(_norm_laxo(c) == "bait" for c in cells):
-                if col_idx is not None and col_idx < len(cells):
-                    return cells[col_idx]
-                # última celda numérica
-                for cell in reversed(cells):
-                    if _to_float(cell) is not None:
-                        return cell
-                return cells[-1] if cells else None
+        i = 8  # fila 9 -> índice 8
+        if i < 0 or i >= len(body_rows):
+            return None
 
-        return None
+        row = body_rows[i]
+        if not row:
+            return None
+
+        # última celda numérica de esa fila
+        for cell in reversed(row):
+            val = _to_float(cell)
+            if val is not None:
+                return str(val)
+        return row[-1] if row else None
+
     except Exception as e:
         print(f"Regex fallback error: {e}")
         return None
@@ -499,7 +448,7 @@ def _extract_row9_lastcell_from_html(html: str):
 def _extraer_bait_saldo_actual_en_target(target):
     """
     Devuelve el 'Saldo Actual' de BAIT usando:
-      - Primero DOM (.mGrid + encabezado 'Saldo Actual' + fila 'BAIT')
+      - Primero DOM (fila 9 y última celda numérica)
       - Luego fallback HTML con la misma lógica.
       - Devuelve float o None
     """
@@ -525,7 +474,7 @@ def _extraer_bait_saldo_actual_en_target(target):
                 return val
 
     return None
-    
+
 # ======== FIN DE LA SECCIÓN CAMBIADA DEL DBGRID ========
 
 def obtener_saldo_recargaqui():
@@ -638,4 +587,3 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
-
