@@ -329,7 +329,7 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=30000, interval_ms=300):
     """
     deadline = time.time() + timeout_ms / 1000.0
     last_err = None
-    row_one_based = 9  # <-- fila fija solicitada
+    row_one_based = 9  # fila fija
 
     while time.time() < deadline:
         try:
@@ -381,20 +381,14 @@ def _poll_row9_lastcell_in_target(target, timeout_ms=30000, interval_ms=300):
                 if not row:
                     continue
 
-                # tomar la última celda numérica de la fila
-                const_num = (txt) => {
-                    const m = (txt || '').replace('\\xa0',' ').replace('$',' ').match(/[-+]?\\d{1,3}(?:,\\d{3})*(?:\\.\\d+)?|[-+]?\\d+(?:\\.\\d+)?/);
-                    return m ? m[0] : null;
-                };
+                # tomar la última celda numérica de la fila en Python
+                for cell in reversed(row):
+                    val = _to_float(cell)
+                    if val is not None:
+                        return {"text": str(val)}
 
-                for (let k = row.length - 1; k >= 0; k--) {
-                    const cand = const_num(row[k]);
-                    if (cand) return { text: cand };
-                }
-
-                // si ninguna celda tiene número, devuelve la última tal cual
-                return { text: row[row.length - 1] };
-            }
+                # si ninguna celda tiene número, devuelve la última tal cual
+                return {"text": row[-1]} if row else None
 
         except Exception as e:
             last_err = e
@@ -587,3 +581,4 @@ if __name__ == "__main__":
             else:
                 print(f"Reintentando ciclo completo en 10 segundos... (Falla pagaqui={falla_pagaqui}, falla bait={falla_bait})\n")
                 time.sleep(10)
+
